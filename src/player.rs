@@ -448,10 +448,12 @@ impl MediaPlayer {
             )
         };
         player.set_box(max_w, max_h);
-        // 先按配置尺寸占位，拿到视频真实尺寸后再校正（保持比例）
+        // 关键：**不要**在这里清空纹理或改尺寸。
+        // 视频首帧要等 ffprobe + ffmpeg 启动（约 0.2~0.5s），期间如果先把纹理清掉，
+        // surface 就变成"无内容"，合成器会把它画成黑块 → 看到一瞬间黑闪。
+        // 保留上一项的画面，等第一帧到了再无缝替换。
         if let Some(w) = self.state.window() {
-            w.view.set_image(None, (max_w, max_h), &item.file_name());
-            self.refresh_frame();
+            w.update_hud(&self.state, &item.file_name());
         }
         player.load(&item.path, autoplay);
     }
