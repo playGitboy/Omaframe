@@ -27,7 +27,7 @@ pub fn request_open() -> bool {
     }
 }
 
-/// 监听控制 socket（只有主实例做）
+// 监听控制 socket（只有主实例做）
 thread_local! {
     /// 主线程侧的 AppState（控制线程通过 invoke 回调取用；invoke 保证在主线程执行）
     static STATE: RefCell<Option<Rc<AppState>>> = const { RefCell::new(None) };
@@ -85,15 +85,53 @@ pub fn serve_control(state: Rc<AppState>) {
         .ok();
 }
 
+/// 紧凑样式：Adw 默认行高偏大，这里整体压缩
+const COMPACT_CSS: &str = "\
+window.photo-frame-settings { background-color: @theme_bg_color; }\
+preferences-page { background-color: transparent; }\
+preferences-page > scrolledwindow > viewport { margin: 0; padding: 0; }\
+preferences-group { margin-top: 6px; margin-bottom: 6px; }\
+preferences-group > box { margin-top: 0; margin-bottom: 0; }\
+preferences-group label.heading { font-size: 0.86em; font-weight: bold; margin-top: 2px; margin-bottom: 1px; }\
+preferences-group label.description { font-size: 0.76em; margin-top: 0; margin-bottom: 2px; }\
+row, row.entry, row.spin, row.switch, row.combo { min-height: 30px; padding-top: 0; padding-bottom: 0; }\
+row label.title, row label.subtitle { margin-top: 0; margin-bottom: 0; }\
+row label.title { font-size: 0.88em; }\
+row label.subtitle { font-size: 0.76em; }\
+entry, spinbutton, spinbutton button { min-height: 24px; font-size: 0.85em; }\
+entry { padding-left: 6px; padding-right: 6px; }\
+switch { min-height: 24px; min-width: 42px; }\
+button.flat { min-height: 24px; min-width: 24px; padding: 0; }\
+";
+
+fn apply_compact(win: &adw::ApplicationWindow) {
+    win.add_css_class("photo-frame-settings");
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(COMPACT_CSS);
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
 pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
     let win = adw::ApplicationWindow::builder()
         .title("桌面相框设置")
-        .default_width(560)
-        .default_height(680)
+        .default_width(400)
+        .default_height(560)
         .build();
+    // 固定尺寸 + 不可缩放：既保证紧凑，也让合成器把它当对话框浮动
+    // （否则会被当普通窗口平铺，看起来又大又难用）
+    win.set_resizable(false);
+    win.set_size_request(400, 560);
+    apply_compact(&win);
 
     let page = adw::PreferencesPage::new();
     page.set_title("相框");
+    page.set_icon_name(Some("preferences-desktop-display-symbolic"));
     page.set_icon_name(Some("preferences-desktop-display-symbolic"));
 
     // ---------------- 媒体 ----------------
@@ -113,20 +151,20 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         .build();
     {
         let st = state.clone();
-        let row = dir_row.clone();
         let row_in = dir_row.clone();
         let ww = win_weak.clone();
         dir_browse.connect_clicked(move |_| {
-            let dialog = gtk::FileChooserNative::builder()
+            let dialog = gtk::FileDialog::builder()
                 .title("选择媒体目录")
-                .action(gtk::FileChooserAction::SelectFolder)
                 .build();
-            dialog.set_transient_for(ww.upgrade().as_ref());
             let st = st.clone();
             let row2 = row_in.clone();
-            dialog.connect_response(move |d, resp| {
-                if resp == gtk::ResponseType::Accept {
-                    if let Some(folder) = d.file() {
+            let parent = ww.upgrade();
+            dialog.open(
+                parent.as_ref(),
+                gio::Cancellable::NONE,
+                move |res| {
+                    if let Ok(folder) = res {
                         if let Some(p) = folder.path() {
                             let p = p.to_string_lossy().into_owned();
                             st.update(|c| c.source.path = p.clone());
@@ -134,9 +172,8 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
                             refresh_media(&st);
                         }
                     }
-                }
-            });
-            dialog.show();
+                },
+            );
         });
     }
     dir_row.set_text(&state.config.borrow().source.path);
@@ -247,20 +284,20 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         .build();
     {
         let st = state.clone();
-        let row = frame_row.clone();
         let row_in = frame_row.clone();
         let ww = win_weak.clone();
         frame_btn.connect_clicked(move |_| {
-            let dialog = gtk::FileChooserNative::builder()
+            let dialog = gtk::FileDialog::builder()
                 .title("选择相框 PNG")
-                .action(gtk::FileChooserAction::Open)
                 .build();
-            dialog.set_transient_for(ww.upgrade().as_ref());
             let st = st.clone();
             let row2 = row_in.clone();
-            dialog.connect_response(move |d, resp| {
-                if resp == gtk::ResponseType::Accept {
-                    if let Some(f) = d.file() {
+            let parent = ww.upgrade();
+            dialog.open(
+                parent.as_ref(),
+                gio::Cancellable::NONE,
+                move |res| {
+                    if let Ok(f) = res {
                         if let Some(p) = f.path() {
                             let p = p.to_string_lossy().into_owned();
                             st.update(|c| c.frame.path = p.clone());
@@ -270,9 +307,8 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
                             }
                         }
                     }
-                }
-            });
-            dialog.show();
+                },
+            );
         });
     }
     frame_row.add_suffix(&frame_btn);
@@ -307,6 +343,10 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
                 _ => "top-left",
             };
             st.update(|c| c.window.default_anchor = v.into());
+            // 立即生效：把相框挪到该停靠位置（而不是"下次启动才生效"）
+            if let Some(pl) = st.player.borrow().as_ref() {
+                pl.apply_anchor();
+            }
         });
     }
     g_pos.add(&anchor);
@@ -319,17 +359,26 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         |c| c.window.margin,
         |c, v| c.window.margin = v,
     ));
-    g_pos.add(&switch_row(
-        "启用调试浮层",
-        state.clone(),
-        |_c| std::env::var_os("PHOTO_FRAME_DEBUG").is_some(),
-        |_c, v| {
-        if v {
-            std::env::set_var("PHOTO_FRAME_DEBUG", "1");
-        } else {
-            std::env::remove_var("PHOTO_FRAME_DEBUG");
-        }
-    }));
+    // 调试浮层：运行时即时显隐（不再依赖环境变量）
+    {
+        let row = adw::SwitchRow::new();
+        row.set_title("调试浮层");
+        row.set_subtitle("在相框左上角显示后端/尺寸/位置");
+        row.set_active(
+            state
+                .window()
+                .map(|w| w.has_debug())
+                .unwrap_or(false),
+        );
+        let st = state.clone();
+        row.connect_active_notify(move |r| {
+            if let Some(w) = st.window() {
+                w.set_debug(r.is_active());
+                w.update_hud(&st, "");
+            }
+        });
+        g_pos.add(&row);
+    }
     page.add(&g_pos);
 
     win.set_content(Some(&page));

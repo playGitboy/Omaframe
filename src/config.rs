@@ -165,8 +165,8 @@ impl Default for SourceConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            max_width: 600,
-            max_height: 500,
+            max_width: 400,
+            max_height: 600,
             cache_items: 12,
             cache_budget_mb: 32,
             max_decode_px: 4096,
@@ -210,8 +210,8 @@ impl Default for WindowConfig {
         Self {
             x: 0,
             y: 0,
-            width: 600,
-            height: 500,
+            width: 400,
+            height: 600,
             monitor: String::new(),
             default_anchor: "top-left".into(),
             margin: 32,

@@ -133,6 +133,7 @@ impl VideoPlayer {
         self.playing.get()
     }
 
+    #[allow(dead_code)]
     pub fn current(&self) -> Option<PathBuf> {
         self.path.borrow().clone()
     }
@@ -300,6 +301,7 @@ impl VideoPlayer {
     }
 
     /// 目标显示尺寸：按视频真实比例在 (box_w, box_h) 内取最大
+    #[allow(dead_code)]
     fn target_size(&self, path: &Path) -> (i32, i32) {
         let (bw, bh) = (self.box_w.get(), self.box_h.get());
         match probe_size(path) {

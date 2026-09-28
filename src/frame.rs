@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 pub struct FrameRenderer {
+    #[allow(dead_code)]
     path: PathBuf,
     /// 原始相框（未缩放）
     source: RefCell<Option<gdk_pixbuf::Pixbuf>>,
@@ -39,10 +40,6 @@ impl FrameRenderer {
         })
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// 取指定逻辑尺寸下的相框纹理（带缓存）
     pub fn texture_for(&self, w: i32, h: i32) -> Option<gdk::Texture> {
         if w <= 1 || h <= 1 {
@@ -70,16 +67,4 @@ impl FrameRenderer {
         Some(tex)
     }
 
-    /// 相框失效（配置变了 / 文件被替换）时重载
-    pub fn reload(&self) {
-        *self.cache.borrow_mut() = None;
-        if let Ok(bytes) = std::fs::read(&self.path) {
-            let loader = gdk_pixbuf::PixbufLoader::new();
-            if loader.write(&bytes).is_ok() && loader.close().is_ok() {
-                if let Some(p) = loader.pixbuf() {
-                    *self.source.borrow_mut() = Some(p);
-                }
-            }
-        }
-    }
 }

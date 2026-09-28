@@ -51,6 +51,7 @@ impl Slideshow {
         p
     }
 
+    #[allow(dead_code)]
     pub fn is_paused(&self) -> bool {
         self.paused.get()
     }
@@ -83,6 +84,7 @@ impl Slideshow {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.active.get()
     }
@@ -117,6 +119,7 @@ impl Slideshow {
         *self.source.borrow_mut() = Some(source);
     }
 
+    #[allow(dead_code)]
     pub fn interval(&self) -> u32 {
         self.interval.get()
     }

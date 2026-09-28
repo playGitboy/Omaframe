@@ -9,7 +9,6 @@ use crate::media::library::MediaLibrary;
 use crate::media::{create_source, MediaItem, MediaKind};
 use crate::slideshow::Slideshow;
 use crate::window::monitor_scale;
-use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -29,9 +28,6 @@ pub struct MediaPlayer {
     /// 拖动刷新计时器（16ms）：让预览与手势事件速率解耦 → 流畅
     drag_timer: RefCell<Option<glib::SourceId>>,
 }
-
-/// 拖动期间给 surface 加的"活动余量"（像素）
-const DRAG_PAD: i32 = 320;
 
 #[derive(Clone, Copy, Default)]
 struct DragState {
@@ -58,6 +54,9 @@ struct DragState {
     /// 改大小的目标尺寸（End 时才真正应用）
     target_w: i32,
     target_h: i32,
+    /// 移动过程中的当前位置（End 时写盘）
+    cur_x: f64,
+    cur_y: f64,
 }
 
 impl MediaPlayer {
@@ -160,10 +159,12 @@ impl MediaPlayer {
         Some(player)
     }
 
+    #[allow(dead_code)]
     pub fn library(&self) -> &Rc<MediaLibrary> {
         &self.lib
     }
 
+    #[allow(dead_code)]
     pub fn slideshow(&self) -> &Rc<Slideshow> {
         &self.slides
     }
@@ -259,20 +260,9 @@ impl MediaPlayer {
                     });
                     self.refresh_frame();
                 } else if !was_resize {
-                    // 移动：把最终位置写进配置（拖动过程中只做绘制偏移，不写盘）
+                    // 移动：surface 已经跟着指针走了，这里只把最终位置写进配置
                     let d = *self.drag.borrow();
-                    let (cw, ch) = window.view.content_size();
-                    let screen = crate::geometry::Bounds {
-                        width: d.screen_w as i32,
-                        height: d.screen_h as i32,
-                    };
-                    let (nx, ny) = crate::geometry::clamp_to_screen(
-                        (d.start_x + d.acc_x).round() as i32,
-                        (d.start_y + d.acc_y).round() as i32,
-                        cw,
-                        ch,
-                        screen,
-                    );
+                    let (nx, ny) = (d.cur_x.round() as i32, d.cur_y.round() as i32);
                     self.state.edit(|c| {
                         c.window.x = nx;
                         c.window.y = ny;
@@ -294,39 +284,6 @@ impl MediaPlayer {
         }
     }
 
-    /// 移动：左上角锚点固定，位置夹在屏幕内
-    fn drag_move(self: &Rc<Self>, d: &DragState) {
-        let screen = self
-            .state
-            .window()
-            .map(|w| w.screen_bounds(&self.state))
-            .unwrap_or(crate::geometry::Bounds {
-                width: 1920,
-                height: 1080,
-            });
-        let (cw, ch) = self
-            .state
-            .window()
-            .map(|w| w.view.content_size())
-            .unwrap_or((1, 1));
-        let start = (d.start_x, d.start_y);
-        let (nx, ny) = crate::geometry::clamp_to_screen(
-            (start.0 + d.acc_x).round() as i32,
-            (start.1 + d.acc_y).round() as i32,
-            cw,
-            ch,
-            screen,
-        );
-        self.state.edit(|c| {
-            c.window.x = nx;
-            c.window.y = ny;
-        });
-        if let Some(w) = self.state.window() {
-            w.set_position(nx, ny);
-        }
-    }
-
-    /// 右下角改大小：按当前媒体比例换算，`fit()` 保证不超 max、不变形
     /// 拖动刷新：16ms 一次，与手势事件速率解耦（解决"缩放卡顿"）
     fn drag_tick(self: &Rc<Self>) {
         let Some(window) = self.state.window() else {
@@ -349,8 +306,25 @@ impl MediaPlayer {
         if d.mode_is_resize {
             self.drag_resize(&d);
         } else {
-            // 移动：只改绘制偏移（不写配置、不动 surface）→ 跟手且零开销
-            window.view.set_visual_offset(d.acc_x, d.acc_y);
+            // 移动：直接移动 layer surface（由 16ms 计时器节流 → 跟手且不产生残影）。
+            // 尺寸固定，所以这只是改边距，不会重建 surface。
+            let (cw, ch) = window.view.content_size();
+            let screen = crate::geometry::Bounds {
+                width: d.screen_w as i32,
+                height: d.screen_h as i32,
+            };
+            let (nx, ny) = crate::geometry::clamp_to_screen(
+                (d.start_x + d.acc_x).round() as i32,
+                (d.start_y + d.acc_y).round() as i32,
+                cw,
+                ch,
+                screen,
+            );
+            let mut d2 = self.drag.borrow_mut();
+            d2.cur_x = nx as f64;
+            d2.cur_y = ny as f64;
+            drop(d2);
+            window.set_position(nx, ny);
         }
     }
 
@@ -677,34 +651,19 @@ impl MediaPlayer {
         let Some(window) = self.state.window() else {
             return;
         };
-        // 组件尺寸 = 媒体按**满盒**的 fit（media_scale 只影响组件**内部**的绘制留边），
-        // 所以这里用解码尺寸的比例重新 fit 一次满盒，与是否 96% 解码无关。
+        // 组件尺寸**固定为最大框**，媒体在框内居中绘制 →
+        // 切换媒体时 layer surface 尺寸恒定（不再重建、不再闪黑/残影）
         let (mw, mh) = {
             let cfg = self.state.config.borrow();
             (cfg.display.max_width, cfg.display.max_height)
         };
-        let logical = crate::geometry::fit(size.0.max(1), size.1.max(1), mw, mh);
-        window.view.set_image(Some(tex), logical, caption);
-        // 相框跟随组件尺寸
+        let _ = size;
+        window.view.set_image(Some(tex), (mw, mh), caption);
         self.refresh_frame();
         self.refresh_visibility_rect();
-
-        // 尺寸变了才落盘
-        let changed = {
-            let cfg = self.state.config.borrow();
-            cfg.window.width != logical.0 || cfg.window.height != logical.1
-        };
-        if changed {
-            self.state.edit(|c| {
-                c.window.width = logical.0;
-                c.window.height = logical.1;
-            });
-            self.state.commit();
-        }
         window.update_hud(&self.state, caption);
     }
 
-    /// 预取下一张（同一时间只预取一张，避免内存与 CPU 抖动）
     fn prefetch(self: &Rc<Self>) {
         let random = self.state.config.borrow().slideshow.random;
         let Some(next) = self.lib.peek_next(random) else {
@@ -778,6 +737,31 @@ impl MediaPlayer {
         }
     }
 
+    /// "默认位置 / 边距"立即生效：按停靠方式重算位置并移动相框
+    pub fn apply_anchor(self: &Rc<Self>) {
+        let Some(window) = self.state.window() else {
+            return;
+        };
+        let screen = window.screen_bounds(&self.state);
+        let (anchor, margin) = {
+            let cfg = self.state.config.borrow();
+            (cfg.window.default_anchor.clone(), cfg.window.margin)
+        };
+        let (w, h) = window.view.content_size();
+        let (x, y) = crate::geometry::anchor_pos(&anchor, screen, w, h, margin);
+        self.state.edit(|c| {
+            c.window.x = x;
+            c.window.y = y;
+            c.window.placed = true;
+        });
+        window.set_position(x, y);
+        self.refresh_visibility_rect();
+        if let Some(w2) = self.state.window() {
+            w2.update_hud(&self.state, "");
+        }
+        crate::info!("位置已调整到 ({x},{y})");
+    }
+
     /// 把配置里的媒体内缩比例同步给绘制控件
     pub fn apply_media_scale(self: &Rc<Self>) {
         let s = self.state.config.borrow().display.media_scale;
@@ -806,6 +790,8 @@ impl MediaPlayer {
         }
         let _ = (random, fps, muted);
         self.apply_media_scale();
+        // 关键：尺寸上限变了，之前缓存的纹理是**旧尺寸**，不清缓存会看起来"设置无效"
+        self.images.clear_cache();
         // 重新按新的尺寸上限计算当前媒体的显示尺寸
         self.show_current();
         self.load_frame();

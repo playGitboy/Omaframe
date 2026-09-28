@@ -42,6 +42,7 @@ const MAX_LOG_BYTES: u64 = 1_000_000;
 struct Sink {
     level: Level,
     file: Option<File>,
+    #[allow(dead_code)]
     path: Option<PathBuf>,
     truncated: bool,
 }

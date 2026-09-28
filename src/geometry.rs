@@ -65,6 +65,18 @@ pub fn resize_target(
     )
 }
 
+/// 在固定尺寸的框内，按素材比例缩放并居中，四周再按 `scale` 内缩。
+/// 返回 (x, y, w, h)。框尺寸恒定 → layer surface 尺寸恒定。
+pub fn fit_rect(sw: i32, sh: i32, box_w: i32, box_h: i32, scale: f64) -> (i32, i32, i32, i32) {
+    let s = if scale.is_finite() { scale.clamp(0.2, 1.0) } else { 1.0 };
+    let max_w = ((box_w as f64) * s).round().max(1.0);
+    let max_h = ((box_h as f64) * s).round().max(1.0);
+    let (w, h) = fit(sw, sh, max_w as i32, max_h as i32);
+    let w = w.min(box_w).max(1);
+    let h = h.min(box_h).max(1);
+    ((box_w - w) / 2, (box_h - h) / 2, w, h)
+}
+
 pub fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
     if hi < lo {
         return lo;
@@ -163,6 +175,20 @@ mod tests {
         // 不会超过屏幕剩余空间
         let (w, h) = resize_target(600.0, 2.0, 5000.0, 5000.0, 800.0, 600.0, 160.0, 120.0);
         assert_eq!((w, h), (800, 400));
+    }
+
+    #[test]
+    fn fit_rect_centers_media_in_fixed_box() {
+        // 框固定 600x500，横图 16:9，内缩 0.96 → 媒体宽 576，高 576/1.7778 = 324
+        let (x, y, w, h) = fit_rect(1920, 1080, 600, 500, 0.96);
+        assert_eq!((w, h), (576, 324));
+        assert_eq!((x, y), (12, 88));
+        // 竖图 9:16 → 受高度限制
+        let (x, y, w, h) = fit_rect(1080, 1920, 600, 500, 0.96);
+        assert_eq!((w, h), (270, 480));
+        assert_eq!((x, y), (165, 10));
+        // 框外不越界
+        assert!(x >= 0 && y >= 0 && x + w <= 600 && y + h <= 500);
     }
 
     #[test]

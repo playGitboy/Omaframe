@@ -19,6 +19,7 @@ impl LocalMediaSource {
         }
     }
 
+    #[allow(dead_code)]
     pub fn root(&self) -> &Path {
         &self.root
     }

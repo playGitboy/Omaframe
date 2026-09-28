@@ -39,6 +39,7 @@ thread_local! {
 
 enum Job {
     Decode {
+        #[allow(dead_code)]
         id: String,
         path: PathBuf,
         box_w: i32,
@@ -107,6 +108,7 @@ type LoadedCb = Box<dyn Fn(LoadedImage)>;
 
 pub struct ImageService {
     tx: Option<Sender<Job>>,
+    #[allow(dead_code)]
     ctx: glib::MainContext,
     cache: RefCell<Cache>,
     pending: RefCell<Vec<String>>,
@@ -223,10 +225,12 @@ impl ImageService {
         self.callbacks.borrow_mut().push(cb);
     }
 
+    #[allow(dead_code)]
     pub fn is_pending(&self, id: &str) -> bool {
         self.pending.borrow().iter().any(|p| p == id)
     }
 
+    #[allow(dead_code)]
     pub fn set_cache_limits(&self, items: usize, budget_mb: usize) {
         *self.cache.borrow_mut() = Cache::new(items, budget_mb);
     }
@@ -276,7 +280,7 @@ fn decode_to_bgra(
         _ => (0, 0),
     };
 
-    let mut loader = gdk_pixbuf::PixbufLoader::new();
+    let loader = gdk_pixbuf::PixbufLoader::new();
     if tw > 0 && th > 0 {
         loader.set_size(tw, th);
     }

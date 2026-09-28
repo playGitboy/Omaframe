@@ -99,7 +99,6 @@ impl VisibilityMonitor {
                     }
                     crate::debug!("IPC 事件 {}", ev);
                     // 只传事件名（Send），判定在主线程做
-                    let name = ev.to_string();
                     let ctx = ctx.clone();
                     ctx.invoke(move || {
                         MONITOR.with(|slot| {
@@ -126,10 +125,6 @@ impl VisibilityMonitor {
     pub fn set_rect(self: &Rc<Self>, rect: Rect) {
         self.state.borrow_mut().me = rect;
         self.schedule_check();
-    }
-
-    pub fn is_covered(&self) -> bool {
-        self.state.borrow().covered
     }
 
     /// 去抖：把连续事件合并成一次判定
@@ -200,14 +195,10 @@ impl VisibilityMonitor {
     }
 }
 
-/// 主线程侧的 monitor（读线程通过 invoke 回调里取用）
+// 主线程侧的 monitor（读线程通过 invoke 回调里取用）
 thread_local! {
     static MONITOR: RefCell<Option<Rc<VisibilityMonitor>>> = const { RefCell::new(None) };
     static AVAILABLE: Cell<bool> = const { Cell::new(false) };
-}
-
-pub fn is_supported() -> bool {
-    AVAILABLE.with(|c| c.get())
 }
 
 /// 定位事件 socket。0.5x 之前叫 `.socket2.sock2`，0.56 叫 `.socket2.sock`，

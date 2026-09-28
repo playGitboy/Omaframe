@@ -15,8 +15,6 @@ pub enum ScanStatus {
     Failed(String),
 }
 
-type ScanResult = Result<Result<Vec<MediaItem>, String>, ()>;
-
 thread_local! {
     static LIB: RefCell<Option<std::rc::Weak<MediaLibrary>>> = const { RefCell::new(None) };
 }
@@ -92,6 +90,7 @@ impl MediaLibrary {
         }
     }
 
+    #[allow(dead_code)]
     pub fn status(&self) -> ScanStatus {
         self.status.borrow().clone()
     }
@@ -100,6 +99,7 @@ impl MediaLibrary {
         self.items.borrow().len()
     }
 
+    #[allow(dead_code)]
     pub fn items(&self) -> Vec<MediaItem> {
         self.items.borrow().clone()
     }

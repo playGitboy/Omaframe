@@ -35,6 +35,20 @@ photo-frame quit       # 退出运行中的实例
 PHOTO_FRAME_LOG=debug photo-frame   # 调试日志
 ```
 
+## 状态栏图标
+
+启动后会注册一个 **StatusNotifierItem** 托盘图标（图标名 `emblem-photos-symbolic`）：
+
+* **左键点击** = 显示 / 隐藏设置窗口
+* 没装托盘服务（`org.kde.StatusNotifierWatcher`）的桌面会自动跳过，只记日志，不影响相框
+
+## 窗口架构（重要）
+
+相框的 layer surface 尺寸**固定为 `max_width × max_height`**，图片/视频在框内按自身比例缩放并居中
+（`media_scale` 再内缩 4%），相框 PNG 叠在同一矩形上。
+
+这样做的收益：切换素材时 **surface 尺寸恒定 → 永不重建**，所以没有"闪黑""残影""切换时窗口闪一下"。
+
 ## 交互
 
 | 操作 | 效果 |
@@ -43,8 +57,8 @@ PHOTO_FRAME_LOG=debug photo-frame   # 调试日志
 | 点击图像**左半边** | 上一项 |
 | 点击图像**右半边** | 下一项 |
 | 点击底部 ▶/⏸ | 视频：播放/暂停；图片：暂停/继续轮换 |
-| 拖动主体 | 移动相框（松手保存位置） |
-| 拖右下角 | 改大小（**始终保持媒体比例**，受最大宽高限制，松手保存） |
+| 拖动主体 | 移动相框（surface 跟着指针走，松手保存位置） |
+| 拖右下角 | 改大小（**始终保持媒体比例**，受最大宽高限制，松手保存；拖动中只画预览虚线框） |
 | 窗口盖住相框 | 自动暂停轮换与视频解码（CPU → 0） |
 
 ## 配置
@@ -58,8 +72,8 @@ path = "~/Pictures/PhotoFrame"
 recursive = true
 
 [display]
-max_width = 600         # "保持比例的最大允许尺寸"，不是强制窗口宽
-max_height = 500
+max_width = 400         # 相框**固定画布**尺寸（surface 就是这个大小）
+max_height = 600
 media_scale = 0.96      # 媒体相对组件的内缩比例：0.96 = 照片四周留 2% 细边
                         # （解码分辨率也按它缩，省 8% 内存/带宽）
 cache_items = 12
@@ -86,8 +100,8 @@ path = "~/.config/omarchy-photo-frame/frame.png"   # 透明 PNG，叠在媒体�
 [window]
 x = 32
 y = 32
-width = 600
-height = 338
+width = 400
+height = 600
 monitor = "HEADLESS-1"
 default_anchor = "top-left"   # 首次运行默认位置
 margin = 32

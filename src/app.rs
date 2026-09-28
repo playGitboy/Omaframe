@@ -5,8 +5,6 @@ use crate::geometry;
 use crate::window::frame_window::FrameWindow;
 use crate::window::{detect_backend, monitor_bounds, target_monitor, Backend};
 use adw::prelude::*;
-use gdk::prelude::*;
-use gtk::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -20,6 +18,8 @@ pub struct AppState {
     pub visibility: RefCell<Option<Rc<crate::hypr::VisibilityMonitor>>>,
     /// 设置窗口
     pub settings_window: RefCell<Option<adw::ApplicationWindow>>,
+    /// 托盘图标（无托盘服务时为 None）
+    pub tray: RefCell<Option<Rc<crate::tray::Tray>>>,
     /// 配置是否刚刚被程序修改过（退出时需要再存一次）
     pub dirty: std::cell::Cell<bool>,
 }
@@ -104,6 +104,7 @@ impl AppState {
             player: RefCell::new(None),
             visibility: RefCell::new(None),
             settings_window: RefCell::new(None),
+            tray: RefCell::new(None),
             dirty: std::cell::Cell::new(needs_save),
         });
 
@@ -223,10 +224,6 @@ pub fn run(args: &[String]) -> Result<u8, String> {
         if app_state.window.borrow().is_none() {
             let fw = Rc::new(FrameWindow::new(app_state.clone(), app));
             fw.present();
-            // 调试：启动即应用拖动余量（验证负 margin 是否被支持）
-            if let Some(pad) = std::env::var("PHOTO_FRAME_DRAG_PAD").ok().and_then(|v| v.parse().ok()) {
-                fw.set_drag_padding_full(pad, true);
-            }
             fw.update_hud(&app_state, "");
             *app_state.window.borrow_mut() = Some(fw.clone());
             crate::info!("相框窗口已显示");
@@ -254,6 +251,36 @@ pub fn run(args: &[String]) -> Result<u8, String> {
             }
         }
     });
+
+    // 状态栏图标：左键显示/隐藏设置窗口
+    {
+        let st = state.clone();
+        if let Some(tray) = crate::tray::Tray::new(
+            "emblem-photos-symbolic",
+            "桌面相框 · 点击打开设置",
+            move || {
+                if st.settings_window.borrow().is_none() {
+                    let w = crate::settings::build(&st);
+                    w.present();
+                    *st.settings_window.borrow_mut() = Some(w);
+                } else {
+                    let w = st.settings_window.borrow().clone();
+                    match w {
+                        Some(w) => {
+                            if w.is_visible() {
+                                w.set_visible(false);
+                            } else {
+                                w.present();
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            },
+        ) {
+            *state.tray.borrow_mut() = Some(tray);
+        }
+    }
 
     let code = app.run();
     if state.dirty.get() {

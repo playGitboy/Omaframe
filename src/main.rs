@@ -11,6 +11,7 @@ mod media;
 mod player;
 mod settings;
 mod slideshow;
+mod tray;
 mod window;
 
 use std::process::ExitCode;

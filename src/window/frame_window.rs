@@ -19,10 +19,6 @@ pub struct FrameWindow {
     pub view: MediaView,
     root: gtk::Overlay,
     hud: RefCell<Option<gtk::Label>>,
-    /// 当前的拖动余量（像素）
-    pad: std::cell::Cell<i32>,
-    /// 余量是否四边对称（true = 需要负边距向左上扩张）
-    pad_sym: std::cell::Cell<bool>,
     /// 组件左上角在屏幕上的位置
     pos: std::cell::Cell<(i32, i32)>,
 }
@@ -33,6 +29,38 @@ impl FrameWindow {
         // 必须挂到 Application 上，否则 GApplication 看不到任何窗口会立即退出
         window.set_application(Some(app));
         window.set_title(Some("photo-frame"));
+
+        // 窗口底色必须显式透明：layer surface 一旦被 GTK 标记为不透明，
+        // 相框 PNG 的透明处（内孔、圆角外）就会露出主题背景色 —— 用户看到的是"黑色"。
+        // 注意：CSS 必须在窗口显示前注册到 display。
+        let css = gtk::CssProvider::new();
+        css.connect_parsing_error(|_, section, err| {
+            crate::warn!("CSS 解析错误 @{:?}: {err}", section.start_location());
+        });
+        css.load_from_data(
+            r#"
+            window, window.background, .background {
+                background-color: transparent;
+                background-image: none;
+                box-shadow: none;
+                border-style: none;
+            }
+            .photo-frame-view {
+                background-color: transparent;
+                background-image: none;
+            }
+            "#,
+        );
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &css,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            crate::debug!("窗口透明样式已注册");
+        } else {
+            crate::warn!("拿不到 GDK display，窗口透明样式未注册");
+        }
         window.set_resizable(false);
         window.set_decorated(false);
 
@@ -70,8 +98,6 @@ impl FrameWindow {
             view,
             root,
             hud: RefCell::new(hud),
-            pad: std::cell::Cell::new(0),
-            pad_sym: std::cell::Cell::new(false),
             pos: std::cell::Cell::new((0, 0)),
         };
         fw.setup_backend(&state);
@@ -139,14 +165,6 @@ impl FrameWindow {
     ///                 因此 GTK 的 drag-delta 始终等于真实屏幕位移。
     /// `symmetric=false`：只在右/下加余量（不需要负边距），
     ///                 用于"改大小"——内容真实变大，widget 原点固定，delta 同样准确。
-    /// 拖动时给 widget 增加活动区域。
-    /// 只放大控件本身（**不**改 layer 边距），控件原点始终不动 ——
-    /// 这样"控件坐标 = 屏幕坐标 - 组件位置"恒成立，位移计算不受任何重配置影响。
-    pub fn set_drag_padding_full(&self, px: i32, _symmetric: bool) {
-        self.view.set_drag_pad(px);
-        crate::debug!("拖动活动区 → {px}px");
-    }
-
     fn apply_margins(&self) {
         if !self.window.is_layer_window() {
             return;
@@ -214,6 +232,33 @@ impl FrameWindow {
         }
     }
 
+    pub fn has_debug(&self) -> bool {
+        self.hud.borrow().is_some()
+    }
+
+    /// 调试浮层开关（运行时生效）
+    pub fn set_debug(&self, on: bool) {
+        let mut hud = self.hud.borrow_mut();
+        match (on, hud.is_some()) {
+            (true, false) => {
+                let label = gtk::Label::new(Some("photo-frame"));
+                label.set_halign(gtk::Align::Start);
+                label.set_valign(gtk::Align::Start);
+                label.set_margin_start(8);
+                label.set_margin_top(6);
+                label.set_opacity(0.75);
+                self.root.add_overlay(&label);
+                *hud = Some(label);
+            }
+            (false, true) => {
+                if let Some(l) = hud.take() {
+                    self.root.remove_overlay(&l);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn update_hud(&self, state: &AppState, extra: &str) {
         if let Some(hud) = self.hud.borrow().as_ref() {
             let cfg = state.config.borrow();
@@ -245,8 +290,4 @@ impl FrameWindow {
             })
     }
 
-    /// 供后续拖动/resize 使用：窗口根控件
-    pub fn root(&self) -> &gtk::Overlay {
-        &self.root
-    }
 }

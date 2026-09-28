@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::controls::{ControlLayout, Controls, DragMode, HitZone};
+use crate::controls::{ControlLayout, Controls, HitZone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
@@ -42,9 +42,6 @@ mod imp {
         /// 拖动时的视觉偏移（只改绘制，widget 几何不动）
         pub offset_x: Cell<f64>,
         pub offset_y: Cell<f64>,
-        /// 拖动时额外的控件区域（**保持 0**：一旦放大控件就会重建 layer surface，
-        /// 合成器会把新 surface 画成不透明黑块 —— 用户报的"放大黑屏"就是这个）
-        pub drag_pad: Cell<i32>,
         /// 改大小拖动中的目标尺寸（0,0 = 无预览）
         pub preview_w: Cell<i32>,
         pub preview_h: Cell<i32>,
@@ -66,10 +63,9 @@ mod imp {
 
     impl WidgetImpl for MediaView {
         fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
-            let pad = self.drag_pad.get().max(0);
             let (w, h) = (
-                (self.content_w.get() + pad).max(1),
-                (self.content_h.get() + pad).max(1),
+                self.content_w.get().max(1),
+                self.content_h.get().max(1),
             );
             // 返回 (minimum, natural, minimum_baseline, natural_baseline)
             match orientation {
@@ -84,8 +80,6 @@ mod imp {
             if let Some(h) = hook {
                 h();
             }
-            let w = self.content_w.get().max(1) as f32;
-            let h = self.content_h.get().max(1) as f32;
 
             // 拖动视觉偏移：把内容整体平移绘制（控件尺寸不变 → surface 不重建）
             let (ox, oy) = (self.offset_x.get(), self.offset_y.get());
@@ -100,12 +94,23 @@ mod imp {
                 (self.content_w.get(), self.content_h.get())
             };
             let rect = gtk::graphene::Rect::new(0.0, 0.0, pw as f32, ph as f32);
-            // 媒体按 media_scale 居中内缩；相框 PNG 仍铺满整个组件
-            let (mx, my, mw, mh) = crate::geometry::inset(
-                self.content_w.get(),
-                self.content_h.get(),
-                self.media_scale.get(),
-            );
+            // 组件尺寸是**固定的最大框**，媒体在框内按自身比例缩放并居中 ——
+            // 这样切换媒体时 surface 尺寸永远不变（不再重建、不再闪黑/残影）
+            let texture0 = self.texture.borrow().clone();
+            let (mx, my, mw, mh) = match texture0.as_ref() {
+                Some(t) => crate::geometry::fit_rect(
+                    t.width(),
+                    t.height(),
+                    self.content_w.get(),
+                    self.content_h.get(),
+                    self.media_scale.get(),
+                ),
+                None => crate::geometry::inset(
+                    self.content_w.get(),
+                    self.content_h.get(),
+                    self.media_scale.get(),
+                ),
+            };
             let media_rect = gtk::graphene::Rect::new(
                 mx as f32,
                 my as f32,
@@ -113,7 +118,7 @@ mod imp {
                 mh as f32,
             );
 
-            let texture = self.texture.borrow().clone();
+            let texture = texture0;
             match texture {
                 Some(tex) => {
                     if !self.logged.replace(true) {
@@ -167,6 +172,7 @@ glib::wrapper! {
 impl MediaView {
     pub fn new() -> Self {
         let view: Self = glib::Object::builder().build();
+        view.add_css_class("photo-frame-view");
         view.setup_gestures();
         view
     }
@@ -413,11 +419,6 @@ impl MediaView {
         imp.preview_w.set(w);
         imp.preview_h.set(h);
         self.queue_draw();
-    }
-
-    /// 保留接口但**不再放大控件**：放大控件会重建 layer surface 并出现黑屏
-    pub fn set_drag_pad(&self, _px: i32) {
-        self.imp().drag_pad.set(0);
     }
 
     /// 拖动时的视觉偏移（不改变 widget 几何）

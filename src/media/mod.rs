@@ -46,6 +46,7 @@ impl MediaItem {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum SourceError {
     NotADirectory(String),
     Unreadable(String, std::io::Error),
@@ -69,7 +70,8 @@ pub trait MediaSource: Send + Sync {
     fn type_name(&self) -> &'static str;
     /// 人类可读描述（设置页展示）
     fn describe(&self) -> String;
-    /// 是否实现了"外部变更检测"（V1 本地源为 true）
+    /// 是否实现了"外部变更检测"（V2 远程源预留）
+    #[allow(dead_code)]
     fn supports_watch(&self) -> bool {
         false
     }
