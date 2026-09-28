@@ -1,62 +1,67 @@
 //! 媒体显示控件：自定义 GtkWidget，精确控制尺寸与绘制。
 //!
-//! 一个 widget 负责全部绘制（媒体纹理 / PNG 相框 / 悬停控制层），
-//! 好处是坐标系统一、命中检测与绘制永远一致。
+//! **坐标模型（关键，别再改回去）**
+//! - 控件 = 整块 layer surface = **整个显示器**，尺寸恒定、永不重建
+//! - 相框左上角 `frame_x/frame_y` 直接来自配置（就是屏幕坐标）
+//! - 媒体尺寸 = `fit(素材比例, max_width×media_scale, max_height×media_scale)`
+//! - 相框 = 媒体 × 1.03，居中于 `frame_x/frame_y`
 //!
-//! 不用 GtkPicture 的原因：相框 PNG 需要精确叠在媒体之上、控制层要固定在
-//! 特定位置、视频需要每帧重绘，而且 GtkPicture 会被图片自然尺寸撑爆窗口。
+//! 为什么 surface 要铺满整屏：拖动/缩放时指针必须**始终在控件内**。
+//! 之前 surface 只有"最大框"大小，指针一移出去 GTK 就停止派发事件，
+//! 于是"拖到目标位置却只移动了一部分、还慢半拍"。
+//! 铺满整屏后：指针永不离开 → 事件连续 → 位移精确；且拖动/缩放只改**绘制**，
+//! 没有任何合成器 configure 往返 → 顺滑。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-
-/// 相框比素材放大的倍数（固定大 3%）
-const FRAME_GROWTH: f64 = 1.03;
 
 use crate::controls::{ControlLayout, Controls, HitZone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
-type ClickHandler = std::rc::Rc<dyn Fn(HitZone)>;
-type DragHandler = std::rc::Rc<dyn Fn(crate::controls::DragPhase)>;
+/// 相框比素材放大的倍数
+const FRAME_GROWTH: f64 = 1.03;
+
+type ClickHandler = Rc<dyn Fn(HitZone)>;
+type DragHandler = Rc<dyn Fn(crate::controls::DragPhase)>;
 
 mod imp {
     use super::*;
 
     #[derive(Default)]
     pub struct MediaView {
-        pub content_w: Cell<i32>,
-        pub content_h: Cell<i32>,
-        pub placeholder: Cell<bool>,
+        /// 控件（=layer surface）尺寸：整块显示器，固定不变
+        pub surf_w: Cell<i32>,
+        pub surf_h: Cell<i32>,
+        /// 媒体显示上限（配置 max_width / max_height）
+        pub box_w: Cell<i32>,
+        pub box_h: Cell<i32>,
+        /// 相框左上角的屏幕坐标（配置 window.x / window.y）
+        pub frame_x: Cell<i32>,
+        pub frame_y: Cell<i32>,
+        /// 媒体内缩比例（0.96 = 留 4% 给相框）
+        pub media_scale: Cell<f64>,
         pub texture: RefCell<Option<gdk::Texture>>,
-        /// PNG 相框叠加层（Step 5）
         pub frame: RefCell<Option<gdk::Texture>>,
-        /// 悬停控制层
         pub controls: Controls,
         pub caption: RefCell<String>,
         pub logged: Cell<bool>,
-        pub on_click: RefCell<Option<ClickHandler>>,
-        pub on_drag: RefCell<Option<DragHandler>>,
-        /// 按下位置（区分点击与拖动）
+        /// 缩放预览：目标**媒体**尺寸（0,0 = 无预览）
+        pub preview_w: Cell<i32>,
+        pub preview_h: Cell<i32>,
+        /// 拖动绘制偏移（只影响绘制，控件几何不动 → 事件坐标始终有效）
+        pub offset_x: Cell<f64>,
+        pub offset_y: Cell<f64>,
+        /// 最近一次绘制的相框矩形（含偏移）：命中检测与输入区域用它
+        pub hit_rect: Cell<(f64, f64, f64, f64)>,
         pub press_x: Cell<f64>,
         pub press_y: Cell<f64>,
         pub press_valid: Cell<bool>,
-        /// 尺寸变化回调（FrameWindow 用它同步 surface 输入区域）
-        pub size_hook: RefCell<Option<Rc<dyn Fn()>>>,
-        /// 拖动时的视觉偏移（只改绘制，widget 几何不动）
-        pub offset_x: Cell<f64>,
-        pub offset_y: Cell<f64>,
-        /// 改大小拖动中的目标尺寸（0,0 = 无预览）
-        pub preview_w: Cell<i32>,
-        pub preview_h: Cell<i32>,
-        /// 媒体相对组件的内缩比例（0.96 = 四周留 2% 细边）
-        pub media_scale: Cell<f64>,
-        /// 最近一次指针在控件内的位置（拖动位移用它算，不依赖 GTK 的 delta）
-        pub last_x: Cell<f64>,
-        pub last_y: Cell<f64>,
-        /// 最近一次绘制时素材（=相框）的矩形：命中检测与输入区域都用它
-        pub last_frame_rect: Cell<(f64, f64, f64, f64)>,
-        /// 是否正在拖动（拖动中把输入区域放宽到整块画布，避免指针移出导致手势中断）
+        /// 是否正在拖动：拖动中把输入区域放宽到整屏，否则指针移出相框后事件会中断
         pub dragging: Cell<bool>,
+        pub on_click: RefCell<Option<ClickHandler>>,
+        pub on_drag: RefCell<Option<DragHandler>>,
+        pub size_hook: RefCell<Option<Rc<dyn Fn()>>>,
     }
 
     #[glib::object_subclass]
@@ -70,11 +75,7 @@ mod imp {
 
     impl WidgetImpl for MediaView {
         fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
-            let (w, h) = (
-                self.content_w.get().max(1),
-                self.content_h.get().max(1),
-            );
-            // 返回 (minimum, natural, minimum_baseline, natural_baseline)
+            let (w, h) = (self.surf_w.get().max(1), self.surf_h.get().max(1));
             match orientation {
                 gtk::Orientation::Horizontal => (0, w, -1, -1),
                 _ => (0, h, -1, -1),
@@ -82,100 +83,98 @@ mod imp {
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            // 此刻分配已完成：通知外部同步 surface 输入区域 / 边距
-            let hook = self.size_hook.borrow().clone();
-            if let Some(h) = hook {
+            let (fx, fy, fw, fh, mx, my, mw, mh) = self.geometry();
+            let (ox, oy) = (self.offset_x.get(), self.offset_y.get());
+            // 记录当前可见相框矩形（含偏移）
+            self.hit_rect
+                .set((fx as f64 + ox, fy as f64 + oy, fw as f64, fh as f64));
+            if let Some(h) = self.size_hook.borrow().clone() {
                 h();
             }
 
-            // 拖动视觉偏移：把内容整体平移绘制（控件尺寸不变 → surface 不重建）
-            let (ox, oy) = (self.offset_x.get(), self.offset_y.get());
+            snapshot.save();
             if ox != 0.0 || oy != 0.0 {
                 snapshot.translate(&gtk::graphene::Point::new(ox as f32, oy as f32));
             }
 
-            // 改大小预览：媒体画在目标尺寸处（不超过控件本体，surface 尺寸不变）
+            let media_rect = gtk::graphene::Rect::new(mx as f32, my as f32, mw as f32, mh as f32);
+            let frame_rect = gtk::graphene::Rect::new(fx as f32, fy as f32, fw as f32, fh as f32);
 
-            // 组件尺寸是**固定的最大框**，媒体在框内按自身比例缩放并居中 ——
-            // 这样切换媒体时 surface 尺寸永远不变（不再重建、不再闪黑/残影）
-            let texture0 = self.texture.borrow().clone();
-            let (mx, my, mw, mh) = match texture0.as_ref() {
-                Some(t) => crate::geometry::fit_rect(
-                    t.width(),
-                    t.height(),
-                    self.content_w.get(),
-                    self.content_h.get(),
-                    self.media_scale.get(),
-                ),
-                None => crate::geometry::inset(
-                    self.content_w.get(),
-                    self.content_h.get(),
-                    self.media_scale.get(),
-                ),
-            };
-            let media_rect = gtk::graphene::Rect::new(
-                mx as f32,
-                my as f32,
-                mw as f32,
-                mh as f32,
-            );
-            // 相框固定在"素材放大 FRAME_GROWTH 倍"的矩形上（居中）：
-            // 照片不会顶到相框外沿，视觉上是一圈均匀的框
-            let (frx, fry, frw, frh) = crate::geometry::grow_rect(mx, my, mw, mh, FRAME_GROWTH);
-            let frame_rect = gtk::graphene::Rect::new(
-                frx as f32,
-                fry as f32,
-                frw as f32,
-                frh as f32,
-            );
-            self.last_frame_rect
-                .set((frx as f64, fry as f64, frw as f64, frh as f64));
-
-            let texture = texture0;
-            match texture {
-                Some(tex) => {
-                    if !self.logged.replace(true) {
-                        crate::debug!("绘制纹理 {}x{}", tex.width(), tex.height());
-                    }
-                    snapshot.append_texture(&tex, &media_rect);
+            if let Some(tex) = self.texture.borrow().clone() {
+                if !self.logged.replace(true) {
+                    crate::debug!("绘制纹理 {}x{}", tex.width(), tex.height());
                 }
-                None => {
-                    // 没有媒体时**不画任何底色**：layer surface 若画出深色底，
-                    // 合成器会把它当成不透明黑块（用户看到的"外层黑色"）。
-                    if self.placeholder.get() {
-                        let cr = snapshot.append_cairo(&media_rect);
-                        // 只画一圈极细的提示描边，不填充
-                        cr.set_source_rgba(0.55, 0.75, 1.0, 0.35);
-                        cr.set_line_width(1.0);
-                        cr.rectangle(0.5, 0.5, mw as f64 - 1.0, mh as f64 - 1.0);
-                        let _ = cr.stroke();
-                    }
-                }
+                snapshot.append_texture(&tex, &media_rect);
             }
+            // 没有媒体时不画任何底色：layer surface 一旦被当成不透明就会变黑块
 
-            // 预览时用虚线框出目标范围（"还能再拖多大"一目了然）
-            if self.preview_w.get() > 0 {
-                let cr = snapshot.append_cairo(&media_rect);
-                cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
-                cr.set_line_width(1.5);
-                cr.set_dash(&[5.0, 4.0], 0.0);
-                cr.rectangle(0.75, 0.75, (frw - 1) as f64, (frh - 1) as f64);
-                let _ = cr.stroke();
-            }
-
-            // PNG 相框：比素材大 2%，居中
+            // PNG 相框：比素材大 3%，居中
             if let Some(frame) = self.frame.borrow().as_ref() {
                 snapshot.append_texture(frame, &frame_rect);
             }
 
-            // 悬停控制层：以**相框矩形**为基准，画在相框内侧底部
-            let layout = ControlLayout::new(frw, frh);
+            // 缩放预览虚线框
+            if self.preview_w.get() > 0 {
+                let cr = snapshot.append_cairo(&frame_rect);
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
+                cr.set_line_width(1.5);
+                cr.set_dash(&[5.0, 4.0], 0.0);
+                cr.rectangle(0.75, 0.75, fw as f64 - 1.5, fh as f64 - 1.5);
+                let _ = cr.stroke();
+            }
+
+            // 悬停控制层（以相框矩形为基准）
+            let layout = ControlLayout::new(fw, fh);
             snapshot.save();
-            snapshot.translate(&gtk::graphene::Point::new(frx as f32, fry as f32));
+            snapshot.translate(&gtk::graphene::Point::new(fx as f32, fy as f32));
             let cr = snapshot.append_cairo(&frame_rect);
             crate::controls::paint(&cr, &layout, &self.controls);
             snapshot.restore();
+
+            snapshot.restore();
         }
+    }
+}
+
+impl imp::MediaView {
+    /// (相框 x,y,w,h, 媒体 x,y,w,h)，单位 px，控件（=屏幕）坐标
+    #[allow(clippy::type_complexity)]
+    pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
+        let scale = {
+            let s = self.media_scale.get();
+            if s.is_finite() {
+                s.clamp(0.2, 1.0)
+            } else {
+                1.0
+            }
+        };
+        let (bw, bh) = (self.box_w.get().max(16), self.box_h.get().max(16));
+
+        // 媒体尺寸：预览优先，否则按素材比例在上限内取最大
+        let (mw, mh) = if self.preview_w.get() > 0 {
+            (self.preview_w.get().max(1), self.preview_h.get().max(1))
+        } else if let Some(tex) = self.texture.borrow().as_ref() {
+            crate::geometry::fit(
+                tex.width().max(1),
+                tex.height().max(1),
+                (bw as f64 * scale).round() as i32,
+                (bh as f64 * scale).round() as i32,
+            )
+        } else {
+            (
+                (bw as f64 * scale).round() as i32,
+                (bh as f64 * scale).round() as i32,
+            )
+        };
+
+        // 相框 = 媒体 × 1.03，左上角就是配置位置
+        let fw = ((mw as f64 * FRAME_GROWTH).round() as i32).max(1);
+        let fh = ((mh as f64 * FRAME_GROWTH).round() as i32).max(1);
+        let fx = self.frame_x.get();
+        let fy = self.frame_y.get();
+        let mx = fx + (fw - mw) / 2;
+        let my = fy + (fh - mh) / 2;
+        (fx, fy, fw, fh, mx, my, mw, mh)
     }
 }
 
@@ -194,25 +193,14 @@ impl MediaView {
     }
 
     fn setup_gestures(&self) {
-        // glib 0.22 移除了 clone! 宏，手工用 WeakRef 捕获（不产生引用环）
+        // glib 0.22 无 clone! 宏，手工 WeakRef
         let weak: glib::WeakRef<MediaView> = glib::WeakRef::new();
         weak.set(Some(self));
 
-        // 动画每一步都需要重绘
-        let weak_draw = weak.clone();
-        self.imp()
-            .controls
-            .set_redraw_hook(move || {
-                if let Some(v) = weak_draw.upgrade() {
-                    v.queue_draw();
-                }
-            });
-
-        // 悬停：进入/离开控制层显隐
+        // 悬停
         let motion = gtk::EventControllerMotion::new();
         let w1 = weak.clone();
         motion.connect_enter(move |_, x, y| {
-            crate::debug!("pointer enter ({x:.0},{y:.0})");
             if let Some(v) = w1.upgrade() {
                 v.imp().controls.set_hover(true);
                 v.update_zone(x, y);
@@ -220,47 +208,47 @@ impl MediaView {
         });
         let w2 = weak.clone();
         motion.connect_leave(move |_| {
-            crate::debug!("pointer leave");
             if let Some(v) = w2.upgrade() {
                 v.imp().controls.set_hover(false);
-                v.set_cursor_name(None);
                 v.queue_draw();
             }
         });
         let w3 = weak.clone();
         motion.connect_motion(move |_, x, y| {
-            crate::debug!("pointer motion ({x:.0},{y:.0})");
             if let Some(v) = w3.upgrade() {
                 v.update_zone(x, y);
             }
         });
         self.add_controller(motion);
 
-        // 拖动：移动组件（body）/ 右下角改大小（Resize 热区）
-        // 注：坐标要用 gtk_gesture_drag_get_start_point/delta 拿，信号本身不带坐标。
+        // 拖动：移动 / 右下角改大小。delta 是**相对按下点**的绝对位移，
+        // 因为控件（整屏）全程不动，所以它精确等于屏幕位移。
         let drag = gtk::GestureDrag::new();
         drag.set_button(0);
         let wd = weak.clone();
-        drag.connect_drag_begin(move |_, x, y| {
+        drag.connect_drag_begin(move |d, x, y| {
             let Some(v) = wd.upgrade() else { return };
-            let (fx, fy, fw, fh) = v.frame_rect();
+            let _ = d;
+            let (fx, fy, fw, fh) = v.hit_rect_now();
             let layout = ControlLayout::new(fw as i32, fh as i32);
-            // 播放/暂停按钮上不启动拖动（留给点击）；其余都可以拖
             let Some(mode) = layout.drag_mode_at(x - fx, y - fy) else {
                 return;
             };
             let handler = v.imp().on_drag.borrow().clone();
             if let Some(cb) = handler {
-                cb(crate::controls::DragPhase::Begin(mode, x, y));
+                cb(crate::controls::DragPhase::Begin(
+                    mode,
+                    x - fx,
+                    y - fy,
+                ));
             }
         });
         let wu = weak.clone();
         drag.connect_drag_update(move |_, dx, dy| {
-            if let Some(v) = wu.upgrade() {
-                let handler = v.imp().on_drag.borrow().clone();
-                if let Some(cb) = handler {
-                    cb(crate::controls::DragPhase::Update(dx, dy));
-                }
+            let Some(v) = wu.upgrade() else { return };
+            let handler = v.imp().on_drag.borrow().clone();
+            if let Some(cb) = handler {
+                cb(crate::controls::DragPhase::Update(dx, dy));
             }
         });
         let we = weak.clone();
@@ -274,7 +262,7 @@ impl MediaView {
         });
         self.add_controller(drag);
 
-        // 点击：按下记位置，松开时位移很小才算"点击"（拖动不会误触发切图）
+        // 点击（与拖动区分：位移 ≤6px 才算点击）
         let click = gtk::GestureClick::new();
         click.set_button(0);
         let wp = weak.clone();
@@ -297,9 +285,9 @@ impl MediaView {
                 return;
             }
             if (x - imp.press_x.get()).abs() > 6.0 || (y - imp.press_y.get()).abs() > 6.0 {
-                return; // 按下→松开位移大 = 拖动，不是点击
+                return;
             }
-            let (fx, fy, fw, fh) = v.frame_rect();
+            let (fx, fy, fw, fh) = v.hit_rect_now();
             let layout = ControlLayout::new(fw as i32, fh as i32);
             let zone = layout.hit(x - fx, y - fy);
             if zone == HitZone::None {
@@ -314,57 +302,11 @@ impl MediaView {
         self.add_controller(click);
     }
 
-    /// 最近一次指针位置（控件坐标系）
-    pub fn last_pointer(&self) -> (f64, f64) {
-        (self.imp().last_x.get(), self.imp().last_y.get())
-    }
-
-    /// 是否正在拖动
-    pub fn is_dragging(&self) -> bool {
-        self.imp().dragging.get()
-    }
-
-    pub fn set_dragging(&self, on: bool) {
-        self.imp().dragging.set(on);
-    }
-
-    /// 素材（=相框）在控件内的矩形：画布是上限，相框贴合素材
-    pub fn frame_rect(&self) -> (f64, f64, f64, f64) {
-        let imp = self.imp();
-        if imp.preview_w.get() > 0 {
-            let (w, h) = (imp.preview_w.get(), imp.preview_h.get());
-            let (x, y, w, h) = crate::geometry::fit_rect(
-                w,
-                h,
-                imp.content_w.get(),
-                imp.content_h.get(),
-                imp.media_scale.get(),
-            );
-            let (x, y, w, h) = crate::geometry::grow_rect(x, y, w, h, FRAME_GROWTH);
-            return (x as f64, y as f64, w as f64, h as f64);
-        }
-        let (bx, by, bw, bh) = imp.last_frame_rect.get();
-        if bw <= 0.0 || bh <= 0.0 {
-            // snapshot 还没跑过：按画布内缩估算
-            let (x, y, w, h) = crate::geometry::inset(
-                imp.content_w.get(),
-                imp.content_h.get(),
-                imp.media_scale.get(),
-            );
-            return (x as f64, y as f64, w as f64, h as f64);
-        }
-        (bx, by, bw, bh)
-    }
-
     fn update_zone(&self, x: f64, y: f64) {
-        let imp = self.imp();
-        imp.last_x.set(x);
-        imp.last_y.set(y);
-        // 命中检测以**相框矩形**为基准（画布只是上限）
-        let (fx, fy, fw, fh) = self.frame_rect();
+        let (fx, fy, fw, fh) = self.hit_rect_now();
         let layout = ControlLayout::new(fw as i32, fh as i32);
         let zone = layout.hit(x - fx, y - fy);
-        imp.controls.set_zone(zone);
+        self.imp().controls.set_zone(zone);
         self.set_cursor_name(match zone {
             HitZone::Resize => Some("nwse-resize"),
             HitZone::None => None,
@@ -382,77 +324,93 @@ impl MediaView {
         }
     }
 
-    /// 设置组件逻辑尺寸（立即触发重新测量）
-    pub fn set_content_size(&self, w: i32, h: i32) {
-        let w = w.max(1);
-        let h = h.max(1);
+    pub fn is_dragging(&self) -> bool {
+        self.imp().dragging.get()
+    }
+
+    pub fn set_dragging(&self, on: bool) {
+        if self.imp().dragging.replace(on) == on {
+            return;
+        }
+        if !on {
+            self.queue_draw(); // 让输入区域恢复成相框矩形
+        }
+    }
+
+    /// 当前可见相框矩形（含拖动偏移）
+    pub fn hit_rect_now(&self) -> (f64, f64, f64, f64) {
+        let r = self.imp().hit_rect.get();
+        if r.2 > 0.0 {
+            return r;
+        }
+        let (fx, fy, fw, fh, ..) = self.imp().geometry();
+        (fx as f64, fy as f64, fw as f64, fh as f64)
+    }
+
+    /// 控件（=surface）尺寸：整块显示器，固定
+    pub fn set_surface_size(&self, w: i32, h: i32) {
         let imp = self.imp();
-        if imp.content_w.get() != w || imp.content_h.get() != h {
-            imp.content_w.set(w);
-            imp.content_h.set(h);
-            imp.controls.on_resize();
-            self.queue_resize();
+        let (w, h) = (w.max(1), h.max(1));
+        if imp.surf_w.get() == w && imp.surf_h.get() == h {
+            return;
         }
-    }
-
-    pub fn content_size(&self) -> (i32, i32) {
-        (self.imp().content_w.get(), self.imp().content_h.get())
-    }
-
-    /// 是否画占位底板
-    pub fn set_placeholder(&self, on: bool) {
-        if self.imp().placeholder.replace(on) != on {
-            self.queue_draw();
-        }
-    }
-
-    /// 设置要显示的图片纹理（控件尺寸会跟随图片尺寸）
-    pub fn set_image(&self, texture: Option<gdk::Texture>, size: (i32, i32), caption: &str) {
-        {
-            let imp = self.imp();
-            *imp.texture.borrow_mut() = texture;
-            *imp.caption.borrow_mut() = caption.to_string();
-            imp.placeholder.set(false);
-            imp.logged.set(false);
-        }
-        self.set_content_size(size.0, size.1);
+        imp.surf_w.set(w);
+        imp.surf_h.set(h);
+        self.queue_resize();
         self.queue_draw();
     }
 
-    /// 视频帧纹理（不重置 caption/占位状态）
-    pub fn set_video_frame(&self, texture: Option<gdk::Texture>, size: (i32, i32)) {
-        {
-            let imp = self.imp();
-            *imp.texture.borrow_mut() = texture;
-            imp.placeholder.set(false);
+    pub fn surface_size(&self) -> (i32, i32) {
+        (self.imp().surf_w.get(), self.imp().surf_h.get())
+    }
+
+    /// 媒体显示上限（配置 max_width / max_height）
+    pub fn set_box(&self, w: i32, h: i32) {
+        let imp = self.imp();
+        let (w, h) = (w.max(16), h.max(16));
+        if imp.box_w.get() == w && imp.box_h.get() == h {
+            return;
         }
-        self.set_content_size(size.0, size.1);
+        imp.box_w.set(w);
+        imp.box_h.set(h);
         self.queue_draw();
     }
 
-    /// PNG 相框叠加层
-    pub fn set_frame_texture(&self, texture: Option<gdk::Texture>) {
-        *self.imp().frame.borrow_mut() = texture;
+    pub fn box_size(&self) -> (i32, i32) {
+        (self.imp().box_w.get(), self.imp().box_h.get())
+    }
+
+    /// 相框左上角（屏幕坐标）
+    pub fn set_frame_pos(&self, x: i32, y: i32) {
+        let imp = self.imp();
+        if imp.frame_x.get() == x && imp.frame_y.get() == y {
+            return;
+        }
+        imp.frame_x.set(x);
+        imp.frame_y.set(y);
         self.queue_draw();
     }
 
-    /// 控制层图标状态：true = 正在运行（显示暂停图标）
-    pub fn set_running(&self, running: bool) {
-        self.imp().controls.set_running(running);
-        self.queue_draw();
+    pub fn frame_pos(&self) -> (i32, i32) {
+        (self.imp().frame_x.get(), self.imp().frame_y.get())
     }
 
-    /// 点击回调（主线程）
-    pub fn set_click_handler(&self, cb: impl Fn(HitZone) + 'static) {
-        *self.imp().on_click.borrow_mut() = Some(std::rc::Rc::new(cb));
+    /// 相框尺寸（由素材比例与上限决定）
+    pub fn frame_size(&self) -> (i32, i32) {
+        let (_, _, fw, fh, ..) = self.imp().geometry();
+        (fw, fh)
     }
 
-    /// 拖动回调（主线程）：移动组件 / 右下角改大小
-    pub fn set_drag_handler(&self, cb: impl Fn(crate::controls::DragPhase) + 'static) {
-        *self.imp().on_drag.borrow_mut() = Some(std::rc::Rc::new(cb));
+    /// 媒体尺寸（相框内实际显示的照片大小）
+    pub fn media_size(&self) -> (i32, i32) {
+        let (.., mw, mh) = self.imp().geometry();
+        (mw, mh)
     }
 
-    /// 媒体内缩比例（0.96 = 四周留 2% 细边）
+    pub fn media_scale(&self) -> f64 {
+        self.imp().media_scale.get()
+    }
+
     pub fn set_media_scale(&self, scale: f64) {
         let s = if scale.is_finite() {
             scale.clamp(0.2, 1.0)
@@ -466,7 +424,27 @@ impl MediaView {
         self.queue_draw();
     }
 
-    /// 改大小拖动中的目标尺寸（只影响绘制，不改变控件/窗口尺寸）
+    pub fn set_image(&self, texture: Option<gdk::Texture>, caption: &str) {
+        {
+            let imp = self.imp();
+            *imp.texture.borrow_mut() = texture;
+            *imp.caption.borrow_mut() = caption.to_string();
+            imp.logged.set(false);
+        }
+        self.queue_draw();
+    }
+
+    pub fn set_video_frame(&self, texture: Option<gdk::Texture>) {
+        *self.imp().texture.borrow_mut() = texture;
+        self.queue_draw();
+    }
+
+    pub fn set_frame_texture(&self, texture: Option<gdk::Texture>) {
+        *self.imp().frame.borrow_mut() = texture;
+        self.queue_draw();
+    }
+
+    /// 缩放预览：目标**媒体**尺寸（0,0 = 结束预览）
     pub fn set_preview_size(&self, w: i32, h: i32) {
         let (w, h) = (w.max(0), h.max(0));
         let imp = self.imp();
@@ -478,7 +456,7 @@ impl MediaView {
         self.queue_draw();
     }
 
-    /// 拖动时的视觉偏移（不改变 widget 几何）
+    /// 拖动绘制偏移
     pub fn set_visual_offset(&self, dx: f64, dy: f64) {
         let imp = self.imp();
         if imp.offset_x.get() == dx && imp.offset_y.get() == dy {
@@ -489,17 +467,26 @@ impl MediaView {
         self.queue_draw();
     }
 
-    /// 绘制/分配完成后回调（主线程）：用于同步 surface 输入区域、边距
+    pub fn set_running(&self, running: bool) {
+        self.imp().controls.set_running(running);
+        self.queue_draw();
+    }
+
+    pub fn set_click_handler(&self, cb: impl Fn(HitZone) + 'static) {
+        *self.imp().on_click.borrow_mut() = Some(Rc::new(cb));
+    }
+
+    pub fn set_drag_handler(&self, cb: impl Fn(crate::controls::DragPhase) + 'static) {
+        *self.imp().on_drag.borrow_mut() = Some(Rc::new(cb));
+    }
+
+    /// 每次绘制后回调（用于同步输入区域）
     pub fn set_size_hook(&self, cb: impl Fn() + 'static) {
-        *self.imp().size_hook.borrow_mut() = Some(std::rc::Rc::new(cb));
+        *self.imp().size_hook.borrow_mut() = Some(Rc::new(cb));
     }
 
     pub fn caption(&self) -> String {
         self.imp().caption.borrow().clone()
-    }
-
-    pub fn has_image(&self) -> bool {
-        self.imp().texture.borrow().is_some()
     }
 }
 

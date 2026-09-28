@@ -25,38 +25,33 @@ pub struct MediaPlayer {
     current_is_video: Cell<bool>,
     /// 拖动起点快照：Move = (x, y)，Resize = (max_w, max_h, 宽高比)
     drag: RefCell<DragState>,
-    /// 拖动刷新计时器（16ms）：让预览与手势事件速率解耦 → 流畅
-    drag_timer: RefCell<Option<glib::SourceId>>,
 }
 
 #[derive(Clone, Copy, Default)]
 struct DragState {
     active: bool,
     mode_is_resize: bool,
-    /// 拖动起点（屏幕坐标，Begin 时快照 —— 不能每次重读配置，否则会累加成 2 倍）
+    /// 是否真的移动过
+    moved: bool,
+    /// 拖动起点：相框左上角（屏幕坐标）
     start_x: f64,
     start_y: f64,
-    /// 拖动起点（控件坐标，来自 GestureDrag::start_point）
-    origin_x: f64,
-    origin_y: f64,
-    max_w: f64,
-    max_h: f64,
+    /// 拖动起点：媒体尺寸与比例
+    media_w: f64,
+    media_h: f64,
     aspect: f64,
-    /// 相对按下点的位移（由"控件坐标差"得到，不依赖 GTK 的 drag-delta 语义）
+    /// GTK 的 drag-delta（相对按下点、控件坐标；控件整屏不动 → 精确等于屏幕位移）
     acc_x: f64,
     acc_y: f64,
-    /// 是否已真正移动过（没移动过就不要动 surface，否则会出现"黑屏"）
-    padded: bool,
-    moved: bool,
-    /// Begin 时缓存的屏幕尺寸（避免每帧问 GDK）
+    /// 屏幕尺寸（Begin 缓存）
     screen_w: f64,
     screen_h: f64,
-    /// 改大小的目标尺寸（End 时才真正应用）
-    target_w: i32,
-    target_h: i32,
-    /// 移动过程中的当前位置（End 时写盘）
+    /// 移动过程中的当前位置（End 落盘）
     cur_x: f64,
     cur_y: f64,
+    /// 改大小的目标**媒体**尺寸（End 落盘为上限）
+    target_media_w: i32,
+    target_media_h: i32,
 }
 
 impl MediaPlayer {
@@ -102,7 +97,6 @@ impl MediaPlayer {
             video: RefCell::new(None),
             current_is_video: Cell::new(false),
             drag: RefCell::new(DragState::default()),
-            drag_timer: RefCell::new(None),
         });
 
         // 视频播放器（系统 ffmpeg 不可用则降级为纯图片）
@@ -172,118 +166,96 @@ impl MediaPlayer {
     /// 拖动处理：移动位置 / 右下角改大小（始终保持当前媒体比例）
     pub fn on_drag(self: &Rc<Self>, phase: crate::controls::DragPhase) {
         use crate::controls::{DragMode, DragPhase};
-        crate::debug!("拖动 {:?}", phase);
         let Some(window) = self.state.window() else {
             return;
         };
         match phase {
-            DragPhase::Begin(mode, x, y) => {
-                // 这里**不**加活动余量。
-                // GTK 在"按下+松开"（没有移动）时也会发 begin/end，
-                // 若此时就把 surface 膨胀 320px：相框会瞬间变成一大块透明
-                // surface（用户看到的"放大黑屏"），还会把边距写坏导致位置
-                // 跳到屏幕角落。真正移动后（第一个 Update）再加。
+            DragPhase::Begin(mode, _x, _y) => {
                 let resize = mode == DragMode::Resize;
                 window.view.set_dragging(true);
                 window.sync_input_region();
-                let (cw, ch) = window.view.content_size();
-                let cfg = self.state.config.borrow();
+                let (sx, sy) = window.view.frame_pos();
+                let (mw, mh) = window.view.media_size();
+                let bounds = window.screen_bounds(&self.state);
                 let mut d = self.drag.borrow_mut();
                 d.active = true;
-                d.padded = false;
-                d.moved = false;
                 d.mode_is_resize = resize;
-                let (sx, sy) = {
-                    let cfg = self.state.config.borrow();
-                    (cfg.window.x as f64, cfg.window.y as f64)
-                };
-                d.start_x = sx;
-                d.start_y = sy;
-                d.origin_x = x;
-                d.origin_y = y;
-                d.max_w = cfg.display.max_width as f64;
-                d.max_h = cfg.display.max_height as f64;
-                d.aspect = if cw > 0 && ch > 0 {
-                    cw as f64 / ch as f64
-                } else {
-                    1.0
-                };
+                d.moved = false;
+                d.start_x = sx as f64;
+                d.start_y = sy as f64;
+                d.media_w = mw.max(1) as f64;
+                d.media_h = mh.max(1) as f64;
+                d.aspect = (mw.max(1) as f64) / (mh.max(1) as f64);
                 d.acc_x = 0.0;
                 d.acc_y = 0.0;
-                d.target_w = 0;
-                d.target_h = 0;
-                // 屏幕尺寸只在 Begin 时取一次
-                let b = window.screen_bounds(&self.state);
-                d.screen_w = b.width as f64;
-                d.screen_h = b.height as f64;
-                self.ensure_drag_timer();
+                d.cur_x = sx as f64;
+                d.cur_y = sy as f64;
+                d.target_media_w = 0;
+                d.target_media_h = 0;
+                d.screen_w = bounds.width as f64;
+                d.screen_h = bounds.height as f64;
             }
             DragPhase::Update(dx, dy) => {
-                let _ = (dx, dy);
-                // 手势事件只用来"唤醒"，实际计算由 drag_tick 统一做
-                // （Update 立刻算一次保证低延迟，16ms 计时器负责补帧保证流畅）
-                self.drag_tick();
+                // 事件驱动、立即应用：不轮询、不延时 → 不会"慢半拍/少走一段"。
+                // 控件（整屏）全程不动，所以 GTK 的 delta 就是精确的屏幕位移。
+                let d = {
+                    let mut d = self.drag.borrow_mut();
+                    if !d.active {
+                        return;
+                    }
+                    d.acc_x = dx;
+                    d.acc_y = dy;
+                    if dx.abs() > 0.5 || dy.abs() > 0.5 {
+                        d.moved = true;
+                    }
+                    *d
+                };
+                if d.mode_is_resize {
+                    self.drag_resize(&d);
+                } else {
+                    self.drag_move(&d);
+                }
             }
             DragPhase::End => {
-                let (active, was_resize, moved) = {
-                    let d = self.drag.borrow();
-                    (d.active, d.mode_is_resize, d.moved)
-                };
-                if !active {
-                    return;
-                }
-                let (target_w, target_h) = {
+                let d = {
                     let mut d = self.drag.borrow_mut();
+                    if !d.active {
+                        return;
+                    }
                     d.active = false;
-                    d.padded = false;
-                    d.moved = false;
-                    (d.target_w, d.target_h)
+                    *d
                 };
-                if let Some(t) = self.drag_timer.borrow_mut().take() {
-                    t.remove();
-                }
-                // 只是点了一下（没移动）→ 什么都不做，避免跳动与"黑屏"
-                if !moved {
+                window.view.set_dragging(false);
+                if !d.moved {
+                    window.sync_input_region();
                     return;
                 }
-                if let Some(t) = self.drag_timer.borrow_mut().take() {
-                    t.remove();
-                }
-                window.view.set_dragging(false);
-                // 先把 surface 移到最终位置，再清掉绘制偏移（顺序反过来会闪一下）
-                let d0 = *self.drag.borrow();
-                if !was_resize {
-                    let (nx, ny) = (d0.cur_x.round() as i32, d0.cur_y.round() as i32);
-                    window.set_position(nx, ny);
-                }
-                window.view.set_visual_offset(0.0, 0.0);
-                window.sync_input_region();
-                if was_resize && target_w > 0 {
-                    // 预览结束：把最终尺寸真正应用上去（surface 只在这里变一次）
-                    window.view.set_preview_size(0, 0);
-                    window.set_size(target_w, target_h);
-                    self.state.edit(|c| {
-                        c.display.max_width = target_w;
-                        c.display.max_height = target_h;
-                        c.window.width = target_w;
-                        c.window.height = target_h;
-                    });
-                    self.refresh_frame();
-                } else if !was_resize {
-                    // 移动：surface 已经跟着指针走了，这里只把最终位置写进配置
-                    let d = *self.drag.borrow();
+                if d.mode_is_resize {
+                    let (nw, nh) = (d.target_media_w, d.target_media_h);
+                    if nw > 0 && nh > 0 {
+                        let scale = window.view.media_scale().clamp(0.2, 1.0);
+                        let box_w = ((nw as f64) / scale).round() as i32;
+                        let box_h = ((nh as f64) / scale).round() as i32;
+                        window.view.set_preview_size(0, 0);
+                        window.set_box(box_w, box_h);
+                        self.state.edit(|c| {
+                            c.display.max_width = box_w;
+                            c.display.max_height = box_h;
+                            c.window.width = box_w;
+                            c.window.height = box_h;
+                        });
+                        self.refresh_frame();
+                    }
+                } else {
                     let (nx, ny) = (d.cur_x.round() as i32, d.cur_y.round() as i32);
+                    window.view.set_visual_offset(0.0, 0.0);
+                    window.set_position(nx, ny);
                     self.state.edit(|c| {
                         c.window.x = nx;
                         c.window.y = ny;
+                        c.window.placed = true;
                     });
                 }
-                // 重新贴回记录的位置
-                let (px, py) = {
-                    let cfg = self.state.config.borrow();
-                    (cfg.window.x, cfg.window.y)
-                };
-                window.set_position(px, py);
                 window.sync_input_region();
                 self.state.commit();
                 self.refresh_visibility_rect();
@@ -294,94 +266,61 @@ impl MediaPlayer {
         }
     }
 
-    /// 拖动刷新：16ms 一次，与手势事件速率解耦（解决"缩放卡顿"）
-    fn drag_tick(self: &Rc<Self>) {
+    /// 移动：只改绘制偏移（控件不动 → 事件不断、零合成器往返）
+    fn drag_move(self: &Rc<Self>, d: &DragState) {
         let Some(window) = self.state.window() else {
             return;
         };
-        // 位移一律用"控件坐标差"：控件原点固定 → last - origin 永远等于真实屏幕位移
-        let (lx, ly) = window.view.last_pointer();
-        let d = {
-            let mut d = self.drag.borrow_mut();
-            if !d.active {
-                return;
-            }
-            d.acc_x = lx - d.origin_x;
-            d.acc_y = ly - d.origin_y;
-            if d.acc_x.abs() > 1.0 || d.acc_y.abs() > 1.0 {
-                d.moved = true;
-            }
-            *d
+        let (fw, fh) = window.view.frame_size();
+        let screen = crate::geometry::Bounds {
+            width: d.screen_w as i32,
+            height: d.screen_h as i32,
         };
-        if d.mode_is_resize {
-            self.drag_resize(&d);
-        } else {
-            // 移动：**只做绘制偏移**（纯 GTK 重绘，60Hz，无合成器往返 → 流畅）。
-            // 每帧改 layer 边距会触发 configure 往返，那才是卡顿的根源。
-            // 窗口已透明，所以偏移后原位置不会留下黑色残影。
-            window.view.set_visual_offset(d.acc_x, d.acc_y);
-            let (cw, ch) = window.view.content_size();
-            let screen = crate::geometry::Bounds {
-                width: d.screen_w as i32,
-                height: d.screen_h as i32,
-            };
-            let (nx, ny) = crate::geometry::clamp_to_screen(
-                (d.start_x + d.acc_x).round() as i32,
-                (d.start_y + d.acc_y).round() as i32,
-                cw,
-                ch,
-                screen,
-            );
-            let mut d2 = self.drag.borrow_mut();
-            d2.cur_x = nx as f64;
-            d2.cur_y = ny as f64;
+        let (nx, ny) = crate::geometry::clamp_to_screen(
+            (d.start_x + d.acc_x).round() as i32,
+            (d.start_y + d.acc_y).round() as i32,
+            fw,
+            fh,
+            screen,
+        );
+        {
+            let mut st = self.drag.borrow_mut();
+            st.cur_x = nx as f64;
+            st.cur_y = ny as f64;
         }
+        window
+            .view
+            .set_visual_offset(nx as f64 - d.start_x, ny as f64 - d.start_y);
     }
 
-    /// 拖动期间 16ms 刷新计时器（只在拖动时存在，抬手即移除 → 静止时零开销）
-    fn ensure_drag_timer(self: &Rc<Self>) {
-        if self.drag_timer.borrow().is_some() {
-            return;
-        }
-        let me = self.clone();
-        let id = glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-            if !me.drag.borrow().active {
-                *me.drag_timer.borrow_mut() = None;
-                glib::ControlFlow::Break
-            } else {
-                me.drag_tick();
-                glib::ControlFlow::Continue
-            }
-        });
-        *self.drag_timer.borrow_mut() = Some(id);
-    }
-
-    /// 改大小：只算目标尺寸 + 更新**预览绘制**，
-    /// 真正的组件/窗口尺寸在松手时一次性应用（每帧重建 surface 是卡顿的主因）。
+    /// 改大小：只更新预览（不碰 surface），松手才写上限
     fn drag_resize(self: &Rc<Self>, d: &DragState) {
-        let Some(window) = self.state.window() else {
-            return;
+        let delta = if d.acc_x.abs() >= d.acc_y.abs() {
+            d.acc_x
+        } else {
+            d.acc_y
         };
-        // 屏幕剩余空间用 Begin 时缓存的值（不每帧问 GDK）
-        let avail_w = (d.screen_w - d.start_x).max(64.0);
-        let avail_h = (d.screen_h - d.start_y).max(64.0);
-        let (nw, nh) = crate::geometry::resize_target(
-            d.max_w,
+        let scale = self
+            .state
+            .window()
+            .map(|w| w.view.media_scale())
+            .unwrap_or(0.96)
+            .clamp(0.2, 1.0);
+        let (nw, nh) = crate::geometry::resize_target_media(
+            d.media_w,
             d.aspect,
-            d.acc_x,
-            d.acc_y,
-            avail_w,
-            avail_h,
+            delta,
+            d.screen_w * scale,
+            d.screen_h * scale,
             crate::config::MIN_WIDTH as f64,
             crate::config::MIN_HEIGHT as f64,
         );
-        self.drag.borrow_mut().target_w = nw;
-        self.drag.borrow_mut().target_h = nh;
-        // 预览被限制在现有控件内 → 拖动中 surface 尺寸恒定
-        let (cw, ch) = window.view.content_size();
-        window
-            .view
-            .set_preview_size(nw.min(cw).max(1), nh.min(ch).max(1));
+        if let Some(window) = self.state.window() {
+            window.view.set_preview_size(nw, nh);
+        }
+        let mut st = self.drag.borrow_mut();
+        st.target_media_w = nw;
+        st.target_media_h = nh;
     }
 
     /// 启动：后台扫描 → 显示第一项 → 开始轮换
@@ -406,7 +345,6 @@ impl MediaPlayer {
             None => return,
         };
         if count == 0 {
-            window.view.set_placeholder(true);
             window.update_hud(&self.state, "媒体目录里没有可用文件");
             return;
         }
@@ -471,9 +409,6 @@ impl MediaPlayer {
         match ev {
             E::Eos => {
                 crate::debug!("视频播放结束");
-                if let Some(w) = self.state.window() {
-                    w.view.set_image(None, w.view.content_size(), "");
-                }
                 // complete 模式：播完切下一项；定时模式由轮换计时器负责
                 if self.state.config.borrow().video.mode == "complete" {
                     self.slides.stop();
@@ -492,40 +427,15 @@ impl MediaPlayer {
         }
     }
 
-    /// 视频帧（主线程）：只在尺寸变化时调整组件大小。
-    /// 注意：ffmpeg 后端已经按**逻辑像素**缩放过（目标尺寸来自 max_width/max_height），
-    /// 所以这里不要再除以屏幕缩放。
-    fn on_video_frame(self: &Rc<Self>, tex: gdk::Texture, w: i32, h: i32) {
+    /// 视频帧（主线程）：画在相框内（控件=整屏，尺寸恒定）
+    fn on_video_frame(self: &Rc<Self>, tex: gdk::Texture, _w: i32, _h: i32) {
         let Some(window) = self.state.window() else {
             return;
         };
-        // 组件按满盒 fit；视频帧在组件内按 media_scale 居中绘制
-        let (mw, mh) = {
-            let cfg = self.state.config.borrow();
-            (cfg.display.max_width, cfg.display.max_height)
-        };
-        let logical = crate::geometry::fit(w.max(1), h.max(1), mw, mh);
         if !self.current_is_video.get() {
             return;
         }
-        let cur = window.view.content_size();
-        if cur != logical {
-            window.view.set_content_size(logical.0, logical.1);
-            let changed = {
-                let cfg = self.state.config.borrow();
-                cfg.window.width != logical.0 || cfg.window.height != logical.1
-            };
-            if changed {
-                self.state.edit(|c| {
-                    c.window.width = logical.0;
-                    c.window.height = logical.1;
-                });
-                self.state.commit();
-            }
-            self.refresh_frame();
-            self.refresh_visibility_rect();
-        }
-        window.view.set_video_frame(Some(tex), logical);
+        window.view.set_video_frame(Some(tex));
     }
 
     /// 当前是否在播放（图片看轮换，视频看管线状态）
@@ -638,12 +548,17 @@ impl MediaPlayer {
             let cfg = self.state.config.borrow();
             (cfg.window.x, cfg.window.y)
         };
-        let (w, h) = self
+        let (fw, fh) = self
             .state
             .window()
-            .map(|win| win.view.content_size())
+            .map(|win| win.view.frame_size())
             .unwrap_or((1, 1));
-        m.set_rect(crate::hypr::Rect { x, y, w, h });
+        m.set_rect(crate::hypr::Rect {
+            x,
+            y,
+            w: fw,
+            h: fh,
+        });
     }
 
     /// 组件尺寸变化后重新生成相框纹理
@@ -651,8 +566,8 @@ impl MediaPlayer {
         let renderer = self.frame.borrow().clone();
         if let Some(r) = renderer {
             if let Some(w) = self.state.window() {
-                let (cw, ch) = w.view.content_size();
-                w.view.set_frame_texture(r.texture_for(cw, ch));
+                let (fw, fh) = w.view.frame_size();
+                w.view.set_frame_texture(r.texture_for(fw, fh));
             }
         }
     }
@@ -668,7 +583,8 @@ impl MediaPlayer {
             (cfg.display.max_width, cfg.display.max_height)
         };
         let _ = size;
-        window.view.set_image(Some(tex), (mw, mh), caption);
+        window.view.set_box(mw, mh);
+        window.view.set_image(Some(tex), caption);
         self.refresh_frame();
         self.refresh_visibility_rect();
         window.update_hud(&self.state, caption);
@@ -760,13 +676,9 @@ impl MediaPlayer {
             let cfg = self.state.config.borrow();
             (cfg.window.default_anchor.clone(), cfg.window.margin)
         };
-        // 相框在画布内的偏移与尺寸
-        let (fx, fy, fw, fh) = window.view.frame_rect();
-        let (fw, fh) = (fw as i32, fh as i32);
-        // 期望"相框"落在屏幕上的位置
-        let (want_x, want_y) = crate::geometry::anchor_pos(&anchor, screen, fw, fh, margin);
-        // 画布位置 = 相框位置 - 相框在画布内的偏移
-        let (x, y) = (want_x - fx as i32, want_y - fy as i32);
+        // 相框尺寸由素材决定；位置直接就是相框左上角
+        let (fw, fh) = window.view.frame_size();
+        let (x, y) = crate::geometry::anchor_pos(&anchor, screen, fw, fh, margin);
         self.state.edit(|c| {
             c.window.x = x;
             c.window.y = y;
@@ -774,7 +686,6 @@ impl MediaPlayer {
         });
         window.set_position(x, y);
         self.refresh_visibility_rect();
-        // 必须落盘：否则重启后位置又回去了（edit 只改内存）
         self.state.commit();
         if let Some(w2) = self.state.window() {
             w2.update_hud(&self.state, "");

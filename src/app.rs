@@ -242,13 +242,12 @@ pub fn run(args: &[String]) -> Result<u8, String> {
                     let cfg = app_state.config.borrow();
                     (cfg.window.x, cfg.window.y)
                 };
-                let (vw, vh) = fw.view.content_size();
+                let (fw_, fh_) = fw.view.frame_size();
                 let monitor = crate::hypr::VisibilityMonitor::start(crate::hypr::Rect {
                     x: mx,
-                    // Hyprland 会把层 surface 放在 bar 之下，用一点余量避免误判
                     y: my,
-                    w: vw,
-                    h: vh,
+                    w: fw_,
+                    h: fh_,
                 });
                 let p2 = player.clone();
                 monitor.on_change(move |visible| p2.set_active(visible));

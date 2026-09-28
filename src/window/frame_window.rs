@@ -4,6 +4,11 @@
 //!   - 不参与平铺、不出现在窗口列表、永不获得键盘焦点
 //!   - 永远位于普通窗口之下
 //!   - 指针事件只在其未被覆盖时到达 → 被覆盖时天然不响应
+//!
+//! **surface 铺满整个显示器且永不改变尺寸**：相框的位置/大小全部是"绘制"出来的。
+//! 这样拖动/缩放时指针永远不会离开控件（否则 GTK 会停止派发事件，
+//! 表现为"拖到目标却只移动一段、还慢半拍"），而且全程零合成器 configure。
+//!
 //! 后端 B（降级）：普通 toplevel，位置/焦点由合成器决定（不写用户配置文件）。
 
 use crate::app::AppState;
@@ -19,8 +24,8 @@ pub struct FrameWindow {
     pub view: MediaView,
     root: gtk::Overlay,
     hud: RefCell<Option<gtk::Label>>,
-    /// 组件左上角在屏幕上的位置
-    pos: std::cell::Cell<(i32, i32)>,
+    /// 最近一次已生效的输入区域（用于去重，避免"设区域→重绘→再设"死循环）
+    applied_region: std::rc::Rc<std::cell::Cell<(i32, i32, i32, i32)>>,
 }
 
 impl FrameWindow {
@@ -32,7 +37,6 @@ impl FrameWindow {
 
         // 窗口底色必须显式透明：layer surface 一旦被 GTK 标记为不透明，
         // 相框 PNG 的透明处（内孔、圆角外）就会露出主题背景色 —— 用户看到的是"黑色"。
-        // 注意：CSS 必须在窗口显示前注册到 display。
         let css = gtk::CssProvider::new();
         css.connect_parsing_error(|_, section, err| {
             crate::warn!("CSS 解析错误 @{:?}: {err}", section.start_location());
@@ -57,24 +61,19 @@ impl FrameWindow {
                 &css,
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
-            crate::debug!("窗口透明样式已注册");
-        } else {
-            crate::warn!("拿不到 GDK display，窗口透明样式未注册");
         }
+
         window.set_resizable(false);
         window.set_decorated(false);
 
-        let (w, h) = {
-            let cfg = state.config.borrow();
-            (cfg.window.width, cfg.window.height)
-        };
-
         let view = MediaView::new();
-        view.set_content_size(w, h);
-        view.set_placeholder(true);
+        {
+            let cfg = state.config.borrow();
+            view.set_box(cfg.display.max_width, cfg.display.max_height);
+            view.set_frame_pos(cfg.window.x, cfg.window.y);
+            view.set_media_scale(cfg.display.media_scale);
+        }
 
-        // view 直接作为 Overlay 的子控件：拖动时给它加 margin，
-        // 窗口自然尺寸 = 组件 + 2*margin（内容视觉位置不变）
         let root = gtk::Overlay::new();
         root.set_child(Some(&view));
 
@@ -98,23 +97,25 @@ impl FrameWindow {
             view,
             root,
             hud: RefCell::new(hud),
-            pos: std::cell::Cell::new((0, 0)),
+            applied_region: std::rc::Rc::new(std::cell::Cell::new((-1, -1, -1, -1))),
         };
         fw.setup_backend(&state);
-
-        // 每次绘制后同步 surface 输入区域 + 边距
-        // （layer-shell 的输入区域必须显式设置，否则收不到指针事件）
-        fw.set_size_hook_sync();
+        fw.setup_input_region_hook();
         fw
     }
 
-    /// 后端相关初始化：必须在窗口 realize 之前完成。
+    /// 后端初始化：surface 铺满监视器（四边锚定、边距 0），尺寸固定不变。
     fn setup_backend(&self, state: &Rc<AppState>) {
-        let (x, y, connector) = {
-            let cfg = state.config.borrow();
-            (cfg.window.x, cfg.window.y, cfg.window.monitor.clone())
-        };
+        let connector = state.config.borrow().window.monitor.clone();
         let monitor = target_monitor(&connector);
+        let bounds = monitor
+            .as_ref()
+            .map(monitor_bounds)
+            .unwrap_or(crate::geometry::Bounds {
+                width: 1920,
+                height: 1080,
+            });
+        self.view.set_surface_size(bounds.width, bounds.height);
 
         match state.backend {
             Backend::LayerShell => {
@@ -124,114 +125,80 @@ impl FrameWindow {
                 // 关键：不要任何键盘交互 → 桌面快捷键永不受影响
                 self.window.set_keyboard_mode(KeyboardMode::None);
                 self.window.set_exclusive_zone(0);
-                self.window.set_anchor(Edge::Left, true);
-                self.window.set_anchor(Edge::Top, true);
+                // 四边锚定 + 边距 0 → surface 正好等于整块显示器
+                for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+                    self.window.set_anchor(edge, true);
+                    self.window.set_margin(edge, 0);
+                }
                 if let Some(m) = monitor.as_ref() {
                     self.window.set_monitor(Some(m));
                 }
-                self.pos.set((x, y));
-                self.window.set_margin(Edge::Left, x);
-                self.window.set_margin(Edge::Top, y);
             }
             Backend::Toplevel => {
-                self.window.set_decorated(false);
                 crate::warn!("降级模式：窗口可能被平铺/抢焦点，建议使用支持 layer-shell 的合成器");
             }
         }
     }
 
-    /// 注册"每次绘制后"的同步钩子
-    fn set_size_hook_sync(&self) {
+    /// 每次绘制后把输入区域同步为「当前可见相框矩形」：
+    /// 相框以外（整屏的其余部分）点击穿透，不会挡住桌面。
+    fn setup_input_region_hook(&self) {
         let weak: glib::WeakRef<gtk::Window> = glib::WeakRef::new();
         weak.set(Some(&self.window));
         let view_weak: glib::WeakRef<MediaView> = glib::WeakRef::new();
         view_weak.set(Some(&self.view));
-        // 上面的闭包只借用 window；last_region 用 WeakRef 之外的办法拿不到，
-        // 所以改成只读日志（不依赖 self）
+        let applied = self.applied_region.clone();
         self.view.set_size_hook(move || {
-            let Some(w) = weak.upgrade() else { return };
-            if let Some(n) = w.native() {
-                if let Some(surface) = n.surface() {
-                    let rect = cairo::RectangleInt::new(0, 0, n.width().max(1), n.height().max(1));
-                    surface.set_input_region(Some(&cairo::Region::create_rectangle(&rect)));
-                    crate::debug!("输入区域 → {}x{}", rect.width(), rect.height());
-                }
+            let (Some(w), Some(v)) = (weak.upgrade(), view_weak.upgrade()) else {
+                return;
+            };
+            let Some(n) = w.native() else { return };
+            let Some(surface) = n.surface() else { return };
+            let (sw, sh) = (n.width().max(1), n.height().max(1));
+            // 拖动中：整屏都可接收（指针一定会移出相框，否则手势会被中断）
+            let (x, y, cw, ch) = if v.is_dragging() {
+                (0, 0, sw, sh)
+            } else {
+                let (fx, fy, fw, fh) = v.hit_rect_now();
+                let x = (fx.round() as i32).clamp(0, sw - 1);
+                let y = (fy.round() as i32).clamp(0, sh - 1);
+                (
+                    x,
+                    y,
+                    (fw.round() as i32).max(1).min(sw - x),
+                    (fh.round() as i32).max(1).min(sh - y),
+                )
+            };
+            // 去重：只有真的变了才重新设置并请求一帧
+            // （输入区域要在下一次 commit 才生效，所以设置后必须再画一帧）
+            if applied.get() == (x, y, cw, ch) {
+                return;
             }
+            applied.set((x, y, cw, ch));
+            let rect = cairo::RectangleInt::new(x, y, cw, ch);
+            surface.set_input_region(Some(&cairo::Region::create_rectangle(&rect)));
+            crate::debug!("输入区域 → {}x{}+{}+{}", cw, ch, x, y);
+            v.queue_draw();
         });
-    }
-
-    /// 拖动期间给 surface 加余量，让指针能拖到组件外面。
-    /// 内容位置与视觉完全不变，只是 surface 变大（透明区域不绘制）。
-    /// `symmetric=true`：四边都加余量（surface 需要负边距向左上扩张），
-    ///                 用于"移动"——内容用绘制偏移跟随指针，widget 几何不动，
-    ///                 因此 GTK 的 drag-delta 始终等于真实屏幕位移。
-    /// `symmetric=false`：只在右/下加余量（不需要负边距），
-    ///                 用于"改大小"——内容真实变大，widget 原点固定，delta 同样准确。
-    fn apply_margins(&self) {
-        if !self.window.is_layer_window() {
-            return;
-        }
-        let (x, y) = self.pos.get();
-        // 值没变就不要动边距：改边距会让 layer shell 重新配置 surface，
-        // 那一瞬间合成器可能把它画成不透明黑块
-        if self.window.margin(Edge::Left) != x {
-            self.window.set_margin(Edge::Left, x);
-        }
-        if self.window.margin(Edge::Top) != y {
-            self.window.set_margin(Edge::Top, y);
-        }
     }
 
     pub fn present(&self) {
         self.window.present();
-        // （保留注释）自定义 widget + layer-shell 组合下，GTK 可能不会给 surface 设置输入区域，
-        // 导致收不到指针事件；这里显式把整个组件矩形设为可输入。
-        let weak = glib::WeakRef::<gtk::Window>::new();
-        weak.set(Some(&self.window));
-        self.window.connect_map(move |_| {
-            if let Some(w) = weak.upgrade() {
-                if let Some(native) = w.native() {
-                    if let Some(surface) = native.surface() {
-                        let (width, height) = (
-                            native.width() as f64,
-                            native.height() as f64,
-                        );
-                        let rect = cairo::RectangleInt::new(0, 0, width.max(1.0) as i32, height.max(1.0) as i32);
-                        let region = cairo::Region::create_rectangle(&rect);
-                        surface.set_input_region(Some(&region));
-                    }
-                }
-            }
-        });
     }
 
+    /// 相框位置：直接改绘制坐标（不动 layer 边距 → 零 configure）
     pub fn set_position(&self, x: i32, y: i32) {
-        self.pos.set((x, y));
-        if self.window.is_layer_window() {
-            self.apply_margins();
-        } else {
-            // 降级模式：Wayland 下应用无法自行移动 toplevel，由合成器决定位置
-            crate::debug!("降级模式忽略位置 ({}, {})", x, y);
-        }
+        self.view.set_frame_pos(x, y);
     }
 
-    pub fn set_size(&self, w: i32, h: i32) {
-        self.view.set_content_size(w, h);
-        self.sync_input_region();
+    /// 媒体上限（配置 max_width/max_height）
+    pub fn set_box(&self, w: i32, h: i32) {
+        self.view.set_box(w, h);
     }
 
-    /// 同步 surface 输入区域（layer-shell 必需）。
-    /// 用**窗口实际尺寸**（含拖动余量）而不是组件尺寸，否则余量区收不到事件。
     pub fn sync_input_region(&self) {
-        if let Some(native) = self.window.native() {
-            if let Some(surface) = native.surface() {
-                let w = native.width().max(1);
-                let h = native.height().max(1);
-                let rect = cairo::RectangleInt::new(0, 0, w, h);
-                let region = cairo::Region::create_rectangle(&rect);
-                surface.set_input_region(Some(&region));
-            }
-        }
+        // 输入区域由每次绘制的 hook 同步，这里只需触发一次重绘
+        self.view.queue_draw();
     }
 
     pub fn has_debug(&self) -> bool {
@@ -265,15 +232,13 @@ impl FrameWindow {
     pub fn update_hud(&self, state: &AppState, extra: &str) {
         if let Some(hud) = self.hud.borrow().as_ref() {
             let cfg = state.config.borrow();
-            let (w, h) = self.view.content_size();
+            let (fx, fy) = self.view.frame_pos();
+            let (fw, fh) = self.view.frame_size();
+            let (mw, mh) = self.view.media_size();
             hud.set_text(&format!(
-                "photo-frame\nbackend: {}\nmonitor: {}\npos: {},{}\nsize: {}x{} (max {}x{})\n{}",
+                "photo-frame\nbackend: {}\nmonitor: {}\nframe: {fx},{fy} {fw}x{fh}\nmedia: {mw}x{mh} (max {}x{})\n{}",
                 state.backend.as_str(),
                 cfg.window.monitor,
-                cfg.window.x,
-                cfg.window.y,
-                w,
-                h,
                 cfg.display.max_width,
                 cfg.display.max_height,
                 extra
@@ -292,5 +257,4 @@ impl FrameWindow {
                 height: 1080,
             })
     }
-
 }
