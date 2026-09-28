@@ -60,19 +60,6 @@ impl ControlLayout {
         }
     }
 
-    pub fn prev_rect(&self) -> (f64, f64, f64, f64) {
-        (self.pad, (self.h - self.d) / 2.0, self.d, self.d)
-    }
-
-    pub fn next_rect(&self) -> (f64, f64, f64, f64) {
-        (
-            self.w - self.pad - self.d,
-            (self.h - self.d) / 2.0,
-            self.d,
-            self.d,
-        )
-    }
-
     pub fn play_rect(&self) -> (f64, f64, f64, f64) {
         (
             (self.w - self.d) / 2.0,
@@ -88,21 +75,39 @@ impl ControlLayout {
         (self.w - s, self.h - s, s, s)
     }
 
+    /// 命中检测：
+    /// - 右下角小方块 = 改大小
+    /// - 底部中央圆钮 = 播放/暂停
+    /// - 其余区域按左右半边分：左半 = 上一项，右半 = 下一项（无按钮，纯点击热区）
     pub fn hit(&self, x: f64, y: f64) -> HitZone {
-        // resize 优先（它在角落，与其它按钮不重叠）
         if inside(self.resize_rect(), x, y) {
             return HitZone::Resize;
         }
         if inside(self.play_rect(), x, y) {
             return HitZone::PlayPause;
         }
-        if inside(self.prev_rect(), x, y) {
-            return HitZone::Prev;
+        if x < 0.0 || y < 0.0 || x > self.w || y > self.h {
+            return HitZone::None;
         }
-        if inside(self.next_rect(), x, y) {
-            return HitZone::Next;
+        if x < self.w / 2.0 {
+            HitZone::Prev
+        } else {
+            HitZone::Next
         }
-        HitZone::None
+    }
+
+    /// 拖动模式判定（与点击热区分开：左右半区是"切图"，不是拖动把手）
+    pub fn drag_mode_at(&self, x: f64, y: f64) -> Option<DragMode> {
+        if inside(self.resize_rect(), x, y) {
+            return Some(DragMode::Resize);
+        }
+        if inside(self.play_rect(), x, y) {
+            return None; // 播放/暂停按钮上不启动拖动
+        }
+        if x < 0.0 || y < 0.0 || x > self.w || y > self.h {
+            return None;
+        }
+        Some(DragMode::Move)
     }
 }
 
@@ -236,8 +241,6 @@ pub fn paint(cr: &cairo::Context, layout: &ControlLayout, controls: &Controls) {
     }
     let zone = controls.zone();
 
-    button(cr, layout.prev_rect(), a, zone == HitZone::Prev, Icon::Prev);
-    button(cr, layout.next_rect(), a, zone == HitZone::Next, Icon::Next);
     button(
         cr,
         layout.play_rect(),
@@ -264,8 +267,6 @@ pub fn paint(cr: &cairo::Context, layout: &ControlLayout, controls: &Controls) {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Icon {
-    Prev,
-    Next,
     Play,
     Pause,
 }
@@ -298,16 +299,6 @@ fn button(cr: &cairo::Context, r: (f64, f64, f64, f64), alpha: f64, hot: bool, i
             let _ = cr.rectangle(cx + s * 0.23, cy - s, bw, s * 2.0);
             let _ = cr.fill();
         }
-        Icon::Prev => {
-            triangle(cr, cx + s * 0.15, cy - s, cx + s * 0.15, cy + s, cx - s * 0.85, cy);
-            let _ = cr.rectangle(cx + s * 0.35, cy - s, s * 0.42, s * 2.0);
-            let _ = cr.fill();
-        }
-        Icon::Next => {
-            triangle(cr, cx - s * 0.15, cy - s, cx - s * 0.15, cy + s, cx + s * 0.85, cy);
-            let _ = cr.rectangle(cx - s * 0.77, cy - s, s * 0.42, s * 2.0);
-            let _ = cr.fill();
-        }
     }
 }
 
@@ -324,19 +315,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hit_zones_do_not_overlap() {
+    fn left_right_halves_switch_items() {
         let l = ControlLayout::new(600, 338);
-        // 左右按钮
-        assert_eq!(l.hit(l.pad + 5.0, l.h / 2.0), HitZone::Prev);
-        assert_eq!(l.hit(l.w - l.pad - 5.0, l.h / 2.0), HitZone::Next);
-        // 底部中央播放/暂停
+        assert_eq!(l.hit(60.0, 150.0), HitZone::Prev);
+        assert_eq!(l.hit(540.0, 150.0), HitZone::Next);
         let (px, py, pw, ph) = l.play_rect();
         assert_eq!(l.hit(px + pw / 2.0, py + ph / 2.0), HitZone::PlayPause);
-        // 空白处
-        assert_eq!(l.hit(l.w / 2.0, 20.0), HitZone::None);
-        // 右下角
         let (rx, ry, rw, rh) = l.resize_rect();
         assert_eq!(l.hit(rx + rw / 2.0, ry + rh / 2.0), HitZone::Resize);
+        assert_eq!(l.hit(-5.0, 100.0), HitZone::None);
+    }
+
+    #[test]
+    fn drag_handles_ignore_half_zones() {
+        let l = ControlLayout::new(600, 338);
+        // 左右半区是"切图热区"，但仍然可以拖动移动
+        assert_eq!(l.drag_mode_at(60.0, 150.0), Some(DragMode::Move));
+        let (px, py, pw, ph) = l.play_rect();
+        assert_eq!(l.drag_mode_at(px + pw / 2.0, py + ph / 2.0), None);
+        let (rx, ry, rw, rh) = l.resize_rect();
+        assert_eq!(
+            l.drag_mode_at(rx + rw / 2.0, ry + rh / 2.0),
+            Some(DragMode::Resize)
+        );
     }
 
     #[test]

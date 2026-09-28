@@ -33,11 +33,21 @@ mod imp {
         pub logged: Cell<bool>,
         pub on_click: RefCell<Option<ClickHandler>>,
         pub on_drag: RefCell<Option<DragHandler>>,
+        /// 按下位置（区分点击与拖动）
+        pub press_x: Cell<f64>,
+        pub press_y: Cell<f64>,
+        pub press_valid: Cell<bool>,
         /// 尺寸变化回调（FrameWindow 用它同步 surface 输入区域）
         pub size_hook: RefCell<Option<Rc<dyn Fn()>>>,
-        /// 拖动时的视觉偏移（只改绘制，widget 几何不动 → drag-delta 保持真实）
+        /// 拖动时的视觉偏移（只改绘制，widget 几何不动）
         pub offset_x: Cell<f64>,
         pub offset_y: Cell<f64>,
+        /// 拖动时额外的控件区域：指针可以走出组件，但控件**原点不动**
+        /// （因此"控件坐标 = 屏幕坐标 - 组件位置"始终成立）
+        pub drag_pad: Cell<i32>,
+        /// 最近一次指针在控件内的位置（拖动位移用它算，不依赖 GTK 的 delta）
+        pub last_x: Cell<f64>,
+        pub last_y: Cell<f64>,
     }
 
     #[glib::object_subclass]
@@ -51,7 +61,11 @@ mod imp {
 
     impl WidgetImpl for MediaView {
         fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
-            let (w, h) = (self.content_w.get().max(1), self.content_h.get().max(1));
+            let pad = self.drag_pad.get().max(0);
+            let (w, h) = (
+                (self.content_w.get() + pad).max(1),
+                (self.content_h.get() + pad).max(1),
+            );
             // 返回 (minimum, natural, minimum_baseline, natural_baseline)
             match orientation {
                 gtk::Orientation::Horizontal => (0, w, -1, -1),
@@ -176,12 +190,9 @@ impl MediaView {
         drag.connect_drag_begin(move |_, x, y| {
             let Some(v) = wd.upgrade() else { return };
             let layout = ControlLayout::new(v.imp().content_w.get(), v.imp().content_h.get());
-            let zone = layout.hit(x, y);
-            // 按在控制按钮上时不启动拖动（留给点击手势）
-            let mode = match zone {
-                HitZone::Resize => DragMode::Resize,
-                HitZone::None => DragMode::Move,
-                _ => return,
+            // 播放/暂停按钮上不启动拖动（留给点击）；其余都可以拖
+            let Some(mode) = layout.drag_mode_at(x, y) else {
+                return;
             };
             let handler = v.imp().on_drag.borrow().clone();
             if let Some(cb) = handler {
@@ -208,22 +219,38 @@ impl MediaView {
         });
         self.add_controller(drag);
 
-        // 点击：命中区域交给外部（播放器）处理
+        // 点击：按下记位置，松开时位移很小才算"点击"（拖动不会误触发切图）
         let click = gtk::GestureClick::new();
         click.set_button(0);
-        let w4 = weak.clone();
-        click.connect_pressed(move |_, n_press, x, y| {
+        let wp = weak.clone();
+        click.connect_pressed(move |_, _, x, y| {
+            if let Some(v) = wp.upgrade() {
+                let imp = v.imp();
+                imp.press_x.set(x);
+                imp.press_y.set(y);
+                imp.press_valid.set(true);
+            }
+        });
+        let wr = weak.clone();
+        click.connect_released(move |_, n_press, x, y| {
             if n_press != 1 {
                 return;
             }
-            let Some(v) = w4.upgrade() else { return };
-            let layout = ControlLayout::new(v.imp().content_w.get(), v.imp().content_h.get());
+            let Some(v) = wr.upgrade() else { return };
+            let imp = v.imp();
+            if !imp.press_valid.replace(false) {
+                return;
+            }
+            if (x - imp.press_x.get()).abs() > 6.0 || (y - imp.press_y.get()).abs() > 6.0 {
+                return; // 按下→松开位移大 = 拖动，不是点击
+            }
+            let layout = ControlLayout::new(imp.content_w.get(), imp.content_h.get());
             let zone = layout.hit(x, y);
             if zone == HitZone::None {
                 return;
             }
             crate::debug!("点击命中 {:?}", zone);
-            let handler = v.imp().on_click.borrow().clone();
+            let handler = imp.on_click.borrow().clone();
             if let Some(cb) = handler {
                 cb(zone);
             }
@@ -231,8 +258,15 @@ impl MediaView {
         self.add_controller(click);
     }
 
+    /// 最近一次指针位置（控件坐标系）
+    pub fn last_pointer(&self) -> (f64, f64) {
+        (self.imp().last_x.get(), self.imp().last_y.get())
+    }
+
     fn update_zone(&self, x: f64, y: f64) {
         let imp = self.imp();
+        imp.last_x.set(x);
+        imp.last_y.set(y);
         let layout = ControlLayout::new(imp.content_w.get(), imp.content_h.get());
         let zone = layout.hit(x, y);
         imp.controls.set_zone(zone);
@@ -321,6 +355,16 @@ impl MediaView {
     /// 拖动回调（主线程）：移动组件 / 右下角改大小
     pub fn set_drag_handler(&self, cb: impl Fn(crate::controls::DragPhase) + 'static) {
         *self.imp().on_drag.borrow_mut() = Some(std::rc::Rc::new(cb));
+    }
+
+    /// 拖动时给 widget 增加活动区域（指针可走出组件，坐标保持稳定）
+    pub fn set_drag_pad(&self, px: i32) {
+        let px = px.max(0);
+        if self.imp().drag_pad.replace(px) == px {
+            return;
+        }
+        self.queue_resize();
+        self.queue_draw();
     }
 
     /// 拖动时的视觉偏移（不改变 widget 几何）

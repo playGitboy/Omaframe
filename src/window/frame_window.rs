@@ -139,29 +139,12 @@ impl FrameWindow {
     ///                 因此 GTK 的 drag-delta 始终等于真实屏幕位移。
     /// `symmetric=false`：只在右/下加余量（不需要负边距），
     ///                 用于"改大小"——内容真实变大，widget 原点固定，delta 同样准确。
-    pub fn set_drag_padding_full(&self, px: i32, symmetric: bool) {
-        let px = px.max(0);
-        if self.pad.get() == px && self.pad_sym.get() == symmetric {
-            return;
-        }
-        self.pad.set(px);
-        self.pad_sym.set(symmetric);
-        if symmetric {
-            self.view.set_margin_start(px);
-            self.view.set_margin_top(px);
-            self.view.set_margin_end(px);
-            self.view.set_margin_bottom(px);
-        } else {
-            self.view.set_margin_start(0);
-            self.view.set_margin_top(0);
-            self.view.set_margin_end(px);
-            self.view.set_margin_bottom(px);
-        }
-        // 让 GTK 立刻重算窗口尺寸（layer surface 需要重新配置）
-        self.view.queue_resize();
-        self.apply_margins();
-        self.sync_input_region();
-        crate::debug!("拖动余量 → {px}px（对称={symmetric}）");
+    /// 拖动时给 widget 增加活动区域。
+    /// 只放大控件本身（**不**改 layer 边距），控件原点始终不动 ——
+    /// 这样"控件坐标 = 屏幕坐标 - 组件位置"恒成立，位移计算不受任何重配置影响。
+    pub fn set_drag_padding_full(&self, px: i32, _symmetric: bool) {
+        self.view.set_drag_pad(px);
+        crate::debug!("拖动活动区 → {px}px");
     }
 
     fn apply_margins(&self) {
@@ -169,11 +152,8 @@ impl FrameWindow {
             return;
         }
         let (x, y) = self.pos.get();
-        // 对称余量时需要负边距把 surface 向左上扩张（layer-shell 支持负值；
-        // 组件内容通过 view margin 保持在原位，视觉不跳）
-        let p = if self.pad_sym.get() { self.pad.get() } else { 0 };
-        self.window.set_margin(Edge::Left, x - p);
-        self.window.set_margin(Edge::Top, y - p);
+        self.window.set_margin(Edge::Left, x);
+        self.window.set_margin(Edge::Top, y);
     }
 
     pub fn present(&self) {

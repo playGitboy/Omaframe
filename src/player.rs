@@ -38,15 +38,18 @@ struct DragState {
     /// 拖动起点（屏幕坐标，Begin 时快照 —— 不能每次重读配置，否则会累加成 2 倍）
     start_x: f64,
     start_y: f64,
+    /// 拖动起点（控件坐标，来自 GestureDrag::start_point）
+    origin_x: f64,
+    origin_y: f64,
     max_w: f64,
     max_h: f64,
     aspect: f64,
     /// 累计位移（GTK 的 drag-delta 是"相对上一次"的增量，需要累加）
     acc_x: f64,
     acc_y: f64,
-    /// 加余量导致的坐标跳变（第一次 Update 要扣掉）
-    comp_x: f64,
-    comp_y: f64,
+    /// 是否已真正移动过（没移动过就不要膨胀 surface，否则会出现"黑屏"）
+    padded: bool,
+    moved: bool,
 }
 
 impl MediaPlayer {
@@ -165,15 +168,18 @@ impl MediaPlayer {
         };
         match phase {
             DragPhase::Begin(mode, x, y) => {
-                // 给 surface 加"活动余量"，指针才能拖到组件外面：
-                //  - 移动：四边对称（内容用绘制偏移跟随，widget 几何不动）
-                //  - 改大小：只加右/下（内容真实变大，原点固定）
+                // 这里**不**加活动余量。
+                // GTK 在"按下+松开"（没有移动）时也会发 begin/end，
+                // 若此时就把 surface 膨胀 320px：相框会瞬间变成一大块透明
+                // surface（用户看到的"放大黑屏"），还会把边距写坏导致位置
+                // 跳到屏幕角落。真正移动后（第一个 Update）再加。
                 let resize = mode == DragMode::Resize;
-                window.set_drag_padding_full(DRAG_PAD, !resize);
                 let (cw, ch) = window.view.content_size();
                 let cfg = self.state.config.borrow();
                 let mut d = self.drag.borrow_mut();
                 d.active = true;
+                d.padded = false;
+                d.moved = false;
                 d.mode_is_resize = resize;
                 let (sx, sy) = {
                     let cfg = self.state.config.borrow();
@@ -181,7 +187,8 @@ impl MediaPlayer {
                 };
                 d.start_x = sx;
                 d.start_y = sy;
-                let _ = (x, y);
+                d.origin_x = x;
+                d.origin_y = y;
                 d.max_w = cfg.display.max_width as f64;
                 d.max_h = cfg.display.max_height as f64;
                 d.aspect = if cw > 0 && ch > 0 {
@@ -191,21 +198,35 @@ impl MediaPlayer {
                 };
                 d.acc_x = 0.0;
                 d.acc_y = 0.0;
-                // 余量只加在右/下，widget 坐标不跳变 → 无需补偿
-                d.comp_x = 0.0;
-                d.comp_y = 0.0;
             }
             DragPhase::Update(dx, dy) => {
+                let _ = (dx, dy);
+                // 位移一律用"控件坐标差"，不用 GTK 的 drag-delta：
+                //   控件坐标 = 屏幕坐标 - 组件位置（活动区只增大控件、原点不动）
+                // 因此 last - origin 永远等于真实屏幕位移，不会被 surface
+                // 重建 / 余量变化污染。
+                let (lx, ly) = window.view.last_pointer();
+                let mut grow = false;
+                let mut resize_mode = false;
                 {
                     let mut d = self.drag.borrow_mut();
                     if !d.active {
                         return;
                     }
-                    // 注意：GTK 的 drag-delta 是"相对拖动起点"的绝对位移，不是增量
-                    d.acc_x = dx - d.comp_x;
-                    d.acc_y = dy - d.comp_y;
-                    d.comp_x = 0.0;
-                    d.comp_y = 0.0;
+                    d.acc_x = lx - d.origin_x;
+                    d.acc_y = ly - d.origin_y;
+                    if d.acc_x.abs() > 1.0 || d.acc_y.abs() > 1.0 {
+                        d.moved = true;
+                    }
+                    if !d.padded && d.moved {
+                        d.padded = true;
+                        grow = true;
+                        resize_mode = d.mode_is_resize;
+                    }
+                }
+                if grow {
+                    // 第一次真实移动 → 放大控件活动区，指针就能拖出组件
+                    window.set_drag_padding_full(DRAG_PAD, !resize_mode);
                 }
                 let d = *self.drag.borrow();
                 if d.mode_is_resize {
