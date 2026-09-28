@@ -9,6 +9,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+/// 相框比素材放大的倍数（固定大 3%）
+const FRAME_GROWTH: f64 = 1.03;
+
 use crate::controls::{ControlLayout, Controls, HitZone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
@@ -52,6 +55,8 @@ mod imp {
         pub last_y: Cell<f64>,
         /// 最近一次绘制时素材（=相框）的矩形：命中检测与输入区域都用它
         pub last_frame_rect: Cell<(f64, f64, f64, f64)>,
+        /// 是否正在拖动（拖动中把输入区域放宽到整块画布，避免指针移出导致手势中断）
+        pub dragging: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -90,12 +95,7 @@ mod imp {
             }
 
             // 改大小预览：媒体画在目标尺寸处（不超过控件本体，surface 尺寸不变）
-            let (pw, ph) = if self.preview_w.get() > 0 {
-                (self.preview_w.get(), self.preview_h.get())
-            } else {
-                (self.content_w.get(), self.content_h.get())
-            };
-            let rect = gtk::graphene::Rect::new(0.0, 0.0, pw as f32, ph as f32);
+
             // 组件尺寸是**固定的最大框**，媒体在框内按自身比例缩放并居中 ——
             // 这样切换媒体时 surface 尺寸永远不变（不再重建、不再闪黑/残影）
             let texture0 = self.texture.borrow().clone();
@@ -119,8 +119,17 @@ mod imp {
                 mw as f32,
                 mh as f32,
             );
+            // 相框固定在"素材放大 FRAME_GROWTH 倍"的矩形上（居中）：
+            // 照片不会顶到相框外沿，视觉上是一圈均匀的框
+            let (frx, fry, frw, frh) = crate::geometry::grow_rect(mx, my, mw, mh, FRAME_GROWTH);
+            let frame_rect = gtk::graphene::Rect::new(
+                frx as f32,
+                fry as f32,
+                frw as f32,
+                frh as f32,
+            );
             self.last_frame_rect
-                .set((mx as f64, my as f64, mw as f64, mh as f64));
+                .set((frx as f64, fry as f64, frw as f64, frh as f64));
 
             let texture = texture0;
             match texture {
@@ -150,20 +159,20 @@ mod imp {
                 cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
                 cr.set_line_width(1.5);
                 cr.set_dash(&[5.0, 4.0], 0.0);
-                cr.rectangle(0.75, 0.75, (pw - 1) as f64, (ph - 1) as f64);
+                cr.rectangle(0.75, 0.75, (frw - 1) as f64, (frh - 1) as f64);
                 let _ = cr.stroke();
             }
 
-            // PNG 相框**贴合素材矩形**绘制（画布只是上限，不是相框）
+            // PNG 相框：比素材大 2%，居中
             if let Some(frame) = self.frame.borrow().as_ref() {
-                snapshot.append_texture(frame, &media_rect);
+                snapshot.append_texture(frame, &frame_rect);
             }
 
-            // 悬停控制层：以**素材矩形**为基准，画在相框内侧底部
-            let layout = ControlLayout::new(mw, mh);
+            // 悬停控制层：以**相框矩形**为基准，画在相框内侧底部
+            let layout = ControlLayout::new(frw, frh);
             snapshot.save();
-            snapshot.translate(&gtk::graphene::Point::new(mx as f32, my as f32));
-            let cr = snapshot.append_cairo(&media_rect);
+            snapshot.translate(&gtk::graphene::Point::new(frx as f32, fry as f32));
+            let cr = snapshot.append_cairo(&frame_rect);
             crate::controls::paint(&cr, &layout, &self.controls);
             snapshot.restore();
         }
@@ -310,6 +319,15 @@ impl MediaView {
         (self.imp().last_x.get(), self.imp().last_y.get())
     }
 
+    /// 是否正在拖动
+    pub fn is_dragging(&self) -> bool {
+        self.imp().dragging.get()
+    }
+
+    pub fn set_dragging(&self, on: bool) {
+        self.imp().dragging.set(on);
+    }
+
     /// 素材（=相框）在控件内的矩形：画布是上限，相框贴合素材
     pub fn frame_rect(&self) -> (f64, f64, f64, f64) {
         let imp = self.imp();
@@ -322,6 +340,7 @@ impl MediaView {
                 imp.content_h.get(),
                 imp.media_scale.get(),
             );
+            let (x, y, w, h) = crate::geometry::grow_rect(x, y, w, h, FRAME_GROWTH);
             return (x as f64, y as f64, w as f64, h as f64);
         }
         let (bx, by, bw, bh) = imp.last_frame_rect.get();

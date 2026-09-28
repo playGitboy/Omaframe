@@ -350,15 +350,27 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         });
     }
     g_pos.add(&anchor);
-    g_pos.add(&spin_row(
-        "边距",
-        0,
-        512,
-        4,
-        state.clone(),
-        |c| c.window.margin,
-        |c, v| c.window.margin = v,
-    ));
+    // 边距：改了要立刻重新贴靠（只写配置是看不出效果的）
+    {
+        let adj = gtk::Adjustment::new(
+            state.config.borrow().window.margin as f64,
+            0.0,
+            512.0,
+            4.0,
+            16.0,
+            0.0,
+        );
+        let row = adw::SpinRow::builder().title("边距").adjustment(&adj).build();
+        let st = state.clone();
+        adj.connect_value_changed(move |a| {
+            let v = a.value() as i32;
+            st.update(|c| c.window.margin = v);
+            if let Some(p) = st.player.borrow().as_ref() {
+                p.apply_anchor();
+            }
+        });
+        g_pos.add(&row);
+    }
     // 调试浮层：运行时即时显隐（不再依赖环境变量）
     {
         let row = adw::SwitchRow::new();

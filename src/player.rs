@@ -184,6 +184,8 @@ impl MediaPlayer {
                 // surface（用户看到的"放大黑屏"），还会把边距写坏导致位置
                 // 跳到屏幕角落。真正移动后（第一个 Update）再加。
                 let resize = mode == DragMode::Resize;
+                window.view.set_dragging(true);
+                window.sync_input_region();
                 let (cw, ch) = window.view.content_size();
                 let cfg = self.state.config.borrow();
                 let mut d = self.drag.borrow_mut();
@@ -247,7 +249,15 @@ impl MediaPlayer {
                 if let Some(t) = self.drag_timer.borrow_mut().take() {
                     t.remove();
                 }
+                window.view.set_dragging(false);
+                // 先把 surface 移到最终位置，再清掉绘制偏移（顺序反过来会闪一下）
+                let d0 = *self.drag.borrow();
+                if !was_resize {
+                    let (nx, ny) = (d0.cur_x.round() as i32, d0.cur_y.round() as i32);
+                    window.set_position(nx, ny);
+                }
                 window.view.set_visual_offset(0.0, 0.0);
+                window.sync_input_region();
                 if was_resize && target_w > 0 {
                     // 预览结束：把最终尺寸真正应用上去（surface 只在这里变一次）
                     window.view.set_preview_size(0, 0);
@@ -306,8 +316,10 @@ impl MediaPlayer {
         if d.mode_is_resize {
             self.drag_resize(&d);
         } else {
-            // 移动：直接移动 layer surface（由 16ms 计时器节流 → 跟手且不产生残影）。
-            // 尺寸固定，所以这只是改边距，不会重建 surface。
+            // 移动：**只做绘制偏移**（纯 GTK 重绘，60Hz，无合成器往返 → 流畅）。
+            // 每帧改 layer 边距会触发 configure 往返，那才是卡顿的根源。
+            // 窗口已透明，所以偏移后原位置不会留下黑色残影。
+            window.view.set_visual_offset(d.acc_x, d.acc_y);
             let (cw, ch) = window.view.content_size();
             let screen = crate::geometry::Bounds {
                 width: d.screen_w as i32,
@@ -323,8 +335,6 @@ impl MediaPlayer {
             let mut d2 = self.drag.borrow_mut();
             d2.cur_x = nx as f64;
             d2.cur_y = ny as f64;
-            drop(d2);
-            window.set_position(nx, ny);
         }
     }
 
@@ -737,7 +747,10 @@ impl MediaPlayer {
         }
     }
 
-    /// "默认位置 / 边距"立即生效：按停靠方式重算位置并移动相框
+    /// "默认位置 / 边距"立即生效：按停靠方式重算位置。
+    ///
+    /// 注意：画布是"上限"，可见相框在画布内居中，
+    /// 所以要按**相框矩形**贴靠，而不是按画布贴靠（否则会看起来偏内一大截）。
     pub fn apply_anchor(self: &Rc<Self>) {
         let Some(window) = self.state.window() else {
             return;
@@ -747,8 +760,13 @@ impl MediaPlayer {
             let cfg = self.state.config.borrow();
             (cfg.window.default_anchor.clone(), cfg.window.margin)
         };
-        let (w, h) = window.view.content_size();
-        let (x, y) = crate::geometry::anchor_pos(&anchor, screen, w, h, margin);
+        // 相框在画布内的偏移与尺寸
+        let (fx, fy, fw, fh) = window.view.frame_rect();
+        let (fw, fh) = (fw as i32, fh as i32);
+        // 期望"相框"落在屏幕上的位置
+        let (want_x, want_y) = crate::geometry::anchor_pos(&anchor, screen, fw, fh, margin);
+        // 画布位置 = 相框位置 - 相框在画布内的偏移
+        let (x, y) = (want_x - fx as i32, want_y - fy as i32);
         self.state.edit(|c| {
             c.window.x = x;
             c.window.y = y;
@@ -756,10 +774,12 @@ impl MediaPlayer {
         });
         window.set_position(x, y);
         self.refresh_visibility_rect();
+        // 必须落盘：否则重启后位置又回去了（edit 只改内存）
+        self.state.commit();
         if let Some(w2) = self.state.window() {
             w2.update_hud(&self.state, "");
         }
-        crate::info!("位置已调整到 ({x},{y})");
+        crate::info!("位置已调整到 ({x},{y})（相框 {fw}x{fh}，停靠 {anchor}，边距 {margin}）");
     }
 
     /// 把配置里的媒体内缩比例同步给绘制控件

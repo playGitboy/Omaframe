@@ -240,6 +240,7 @@ impl FrameWindow {
 
     /// 调试浮层开关（运行时生效）
     pub fn set_debug(&self, on: bool) {
+        crate::debug!("调试浮层 → {on}");
         let mut hud = self.hud.borrow_mut();
         match (on, hud.is_some()) {
             (true, false) => {

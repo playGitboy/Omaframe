@@ -202,6 +202,11 @@ pub fn run(args: &[String]) -> Result<u8, String> {
 
     adw::init().map_err(|e| format!("GTK 初始化失败：{e}"))?;
 
+    // 默认 8px 的拖拽判定会让"起手"感觉迟钝；调到 2px 更跟手
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_dnd_drag_threshold(2);
+    }
+
     let state = AppState::boot();
     crate::settings::serve_control(state.clone());
 

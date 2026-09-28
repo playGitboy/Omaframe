@@ -77,6 +77,21 @@ pub fn fit_rect(sw: i32, sh: i32, box_w: i32, box_h: i32, scale: f64) -> (i32, i
     ((box_w - w) / 2, (box_h - h) / 2, w, h)
 }
 
+/// 以中心为基准把矩形放大 `factor` 倍（相框比素材大 2% 用）
+pub fn grow_rect(x: i32, y: i32, w: i32, h: i32, factor: f64) -> (i32, i32, i32, i32) {
+    let f = if factor.is_finite() { factor.clamp(1.0, 2.0) } else { 1.0 };
+    let nw = ((w as f64 * f).round() as i32).max(1);
+    let nh = ((h as f64 * f).round() as i32).max(1);
+    let cx = x as f64 + w as f64 / 2.0;
+    let cy = y as f64 + h as f64 / 2.0;
+    (
+        (cx - nw as f64 / 2.0).round() as i32,
+        (cy - nh as f64 / 2.0).round() as i32,
+        nw,
+        nh,
+    )
+}
+
 pub fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
     if hi < lo {
         return lo;
@@ -189,6 +204,16 @@ mod tests {
         assert_eq!((x, y), (165, 10));
         // 框外不越界
         assert!(x >= 0 && y >= 0 && x + w <= 600 && y + h <= 500);
+    }
+
+    #[test]
+    fn grow_rect_keeps_center() {
+        // 素材 (12,88,384,216) 放大 2% → 392x220，中心不变
+        let (x, y, w, h) = grow_rect(12, 88, 384, 216, 1.02);
+        assert_eq!((w, h), (392, 220));
+        assert_eq!((x, y), (8, 86));
+        // 中心对齐
+        assert!((x as f64 + w as f64 / 2.0 - (12.0 + 384.0 / 2.0)).abs() <= 1.0);
     }
 
     #[test]
