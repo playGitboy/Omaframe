@@ -249,11 +249,13 @@ impl VideoPlayer {
                 let mut reader = stdout;
                 let frame_bytes = (nw as usize) * (nh as usize) * 4;
                 let mut buf = vec![0u8; frame_bytes];
+                let mut frames = 0u64;
                 loop {
                     if generation.load(Ordering::SeqCst) != gen {
                         return; // 换了视频 / 被停止
                     }
                     if read_exact_or_eof(&mut reader, &mut buf) {
+                        crate::debug!("视频播放结束（共 {} 帧）", frames);
                         let ctx = ctx.clone();
                         ctx.invoke(move || {
                             if generation.load(Ordering::SeqCst) == gen {
@@ -272,6 +274,7 @@ impl VideoPlayer {
                         std::thread::sleep(std::time::Duration::from_millis(80));
                         continue;
                     }
+                    frames += 1;
                     let data = buf.clone();
                     let ctx = ctx.clone();
                     let generation2 = generation.clone();

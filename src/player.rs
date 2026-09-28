@@ -464,6 +464,9 @@ impl MediaPlayer {
             return;
         };
         let logical = (w.max(1), h.max(1));
+        if !self.current_is_video.get() {
+            return;
+        }
         let cur = window.view.content_size();
         if cur != logical {
             window.view.set_content_size(logical.0, logical.1);
