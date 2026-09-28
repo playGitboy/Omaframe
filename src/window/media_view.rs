@@ -48,6 +48,8 @@ mod imp {
         /// 改大小拖动中的目标尺寸（0,0 = 无预览）
         pub preview_w: Cell<i32>,
         pub preview_h: Cell<i32>,
+        /// 媒体相对组件的内缩比例（0.96 = 四周留 2% 细边）
+        pub media_scale: Cell<f64>,
         /// 最近一次指针在控件内的位置（拖动位移用它算，不依赖 GTK 的 delta）
         pub last_x: Cell<f64>,
         pub last_y: Cell<f64>,
@@ -98,27 +100,39 @@ mod imp {
                 (self.content_w.get(), self.content_h.get())
             };
             let rect = gtk::graphene::Rect::new(0.0, 0.0, pw as f32, ph as f32);
+            // 媒体按 media_scale 居中内缩；相框 PNG 仍铺满整个组件
+            let (mx, my, mw, mh) = crate::geometry::inset(
+                self.content_w.get(),
+                self.content_h.get(),
+                self.media_scale.get(),
+            );
+            let media_rect = gtk::graphene::Rect::new(
+                mx as f32,
+                my as f32,
+                mw as f32,
+                mh as f32,
+            );
+
             let texture = self.texture.borrow().clone();
             match texture {
                 Some(tex) => {
                     if !self.logged.replace(true) {
                         crate::debug!("绘制纹理 {}x{}", tex.width(), tex.height());
                     }
-                    // 控件尺寸 == 图片显示尺寸，直接 1:1 上屏
-                    snapshot.append_texture(&tex, &rect);
+                    snapshot.append_texture(&tex, &media_rect);
                 }
                 None => {
                     if !self.placeholder.get() {
                         return;
                     }
                     // 占位底板，方便肉眼确认位置与实际尺寸
-                    let cr = snapshot.append_cairo(&rect);
+                    let cr = snapshot.append_cairo(&media_rect);
                     cr.set_source_rgba(0.13, 0.13, 0.15, 0.92);
-                    cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                    cr.rectangle(0.0, 0.0, mw as f64, mh as f64);
                     let _ = cr.fill();
                     cr.set_source_rgba(0.55, 0.75, 1.0, 0.9);
                     cr.set_line_width(2.0);
-                    cr.rectangle(1.0, 1.0, w as f64 - 2.0, h as f64 - 2.0);
+                    cr.rectangle(1.0, 1.0, mw as f64 - 2.0, mh as f64 - 2.0);
                     let _ = cr.stroke();
                 }
             }
@@ -375,6 +389,20 @@ impl MediaView {
     /// 拖动回调（主线程）：移动组件 / 右下角改大小
     pub fn set_drag_handler(&self, cb: impl Fn(crate::controls::DragPhase) + 'static) {
         *self.imp().on_drag.borrow_mut() = Some(std::rc::Rc::new(cb));
+    }
+
+    /// 媒体内缩比例（0.96 = 四周留 2% 细边）
+    pub fn set_media_scale(&self, scale: f64) {
+        let s = if scale.is_finite() {
+            scale.clamp(0.2, 1.0)
+        } else {
+            1.0
+        };
+        if (self.imp().media_scale.get() - s).abs() < f64::EPSILON {
+            return;
+        }
+        self.imp().media_scale.set(s);
+        self.queue_draw();
     }
 
     /// 改大小拖动中的目标尺寸（只影响绘制，不改变控件/窗口尺寸）

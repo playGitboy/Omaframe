@@ -385,6 +385,7 @@ impl MediaPlayer {
 
     /// 启动：后台扫描 → 显示第一项 → 开始轮换
     pub fn start(self: &Rc<Self>) {
+        self.apply_media_scale();
         let this = self.clone();
         self.lib.on_scanned(Box::new(move || {
             this.after_scan();
@@ -439,15 +440,20 @@ impl MediaPlayer {
             crate::debug!("无视频后端，跳过 {}", item.file_name());
             return;
         };
-        let (max_w, max_h, autoplay) = {
+        let (max_w, max_h, autoplay, media_scale) = {
             let cfg = self.state.config.borrow();
             (
                 cfg.display.max_width,
                 cfg.display.max_height,
                 cfg.video.autoplay,
+                cfg.display.media_scale,
             )
         };
-        player.set_box(max_w, max_h);
+        // 视频帧也按 96% 渲染（与图片一致），绘制时再居中
+        player.set_box(
+            (max_w as f64 * media_scale).round() as i32,
+            (max_h as f64 * media_scale).round() as i32,
+        );
         // 关键：**不要**在这里清空纹理或改尺寸。
         // 视频首帧要等 ffprobe + ffmpeg 启动（约 0.2~0.5s），期间如果先把纹理清掉，
         // surface 就变成"无内容"，合成器会把它画成黑块 → 看到一瞬间黑闪。
@@ -492,7 +498,12 @@ impl MediaPlayer {
         let Some(window) = self.state.window() else {
             return;
         };
-        let logical = (w.max(1), h.max(1));
+        // 组件按满盒 fit；视频帧在组件内按 media_scale 居中绘制
+        let (mw, mh) = {
+            let cfg = self.state.config.borrow();
+            (cfg.display.max_width, cfg.display.max_height)
+        };
+        let logical = crate::geometry::fit(w.max(1), h.max(1), mw, mh);
         if !self.current_is_video.get() {
             return;
         }
@@ -531,21 +542,23 @@ impl MediaPlayer {
 
     /// 解码目标盒：逻辑尺寸 × 屏幕缩放（HiDPI 下更清晰），上限由配置兜底
     fn decode_box(&self) -> (i32, i32) {
-        let (mw, mh, max_px, connector) = {
+        let (mw, mh, max_px, connector, media_scale) = {
             let cfg = self.state.config.borrow();
             (
                 cfg.display.max_width,
                 cfg.display.max_height,
                 cfg.display.max_decode_px,
                 cfg.window.monitor.clone(),
+                cfg.display.media_scale,
             )
         };
         let scale = crate::window::target_monitor(&connector)
             .as_ref()
             .map(monitor_scale)
             .unwrap_or(1.0);
-        let bw = (mw as f64 * scale).round() as i32;
-        let bh = (mh as f64 * scale).round() as i32;
+        // 与显示一致：媒体只占组件的 media_scale，所以也只需解码那么多像素
+        let bw = (mw as f64 * scale * media_scale).round() as i32;
+        let bh = (mh as f64 * scale * media_scale).round() as i32;
         let cap = max_px.min(bw.max(bh) * 2);
         (bw.min(cap), bh.min(cap))
     }
@@ -647,16 +660,13 @@ impl MediaPlayer {
         let Some(window) = self.state.window() else {
             return;
         };
-        let connector = self.state.config.borrow().window.monitor.clone();
-        let scale = crate::window::target_monitor(&connector)
-            .as_ref()
-            .map(monitor_scale)
-            .unwrap_or(1.0);
-        // 解码尺寸是设备像素，窗口要用逻辑像素
-        let logical = (
-            ((size.0 as f64 / scale).round() as i32).max(1),
-            ((size.1 as f64 / scale).round() as i32).max(1),
-        );
+        // 组件尺寸 = 媒体按**满盒**的 fit（media_scale 只影响组件**内部**的绘制留边），
+        // 所以这里用解码尺寸的比例重新 fit 一次满盒，与是否 96% 解码无关。
+        let (mw, mh) = {
+            let cfg = self.state.config.borrow();
+            (cfg.display.max_width, cfg.display.max_height)
+        };
+        let logical = crate::geometry::fit(size.0.max(1), size.1.max(1), mw, mh);
         window.view.set_image(Some(tex), logical, caption);
         // 相框跟随组件尺寸
         self.refresh_frame();
@@ -751,6 +761,14 @@ impl MediaPlayer {
         }
     }
 
+    /// 把配置里的媒体内缩比例同步给绘制控件
+    pub fn apply_media_scale(self: &Rc<Self>) {
+        let s = self.state.config.borrow().display.media_scale;
+        if let Some(w) = self.state.window() {
+            w.view.set_media_scale(s);
+        }
+    }
+
     /// 设置变更后即时生效：尺寸上限、轮换参数、相框、视频参数
     pub fn apply_settings(self: &Rc<Self>) {
         let (slides_enabled, interval, random, fps, muted, max_w, max_h) = {
@@ -770,6 +788,7 @@ impl MediaPlayer {
             v.set_box(max_w, max_h);
         }
         let _ = (random, fps, muted);
+        self.apply_media_scale();
         // 重新按新的尺寸上限计算当前媒体的显示尺寸
         self.show_current();
         self.load_frame();

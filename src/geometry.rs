@@ -12,6 +12,15 @@ pub fn fit(w: i32, h: i32, max_w: i32, max_h: i32) -> (i32, i32) {
     (nw.min(max_w), nh.min(max_h))
 }
 
+/// 媒体在组件内的居中内缩矩形（scale=0.96 → 四周各留 2%）。
+/// 用于"相框内沿与照片之间留细边"以及按同样比例缩小解码分辨率。
+pub fn inset(w: i32, h: i32, scale: f64) -> (i32, i32, i32, i32) {
+    let s = if scale.is_finite() { scale.clamp(0.2, 1.0) } else { 1.0 };
+    let iw = ((w as f64 * s).round() as i32).max(1);
+    let ih = ((h as f64 * s).round() as i32).max(1);
+    ((w - iw) / 2, (h - ih) / 2, iw.min(w), ih.min(h))
+}
+
 pub fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
     if hi < lo {
         return lo;
@@ -75,6 +84,22 @@ mod tests {
         let (w, h) = fit(8000, 4000, 600, 500);
         assert!(w <= 600 && h <= 500);
         assert_eq!((w, h), (600, 300));
+    }
+
+    #[test]
+    fn inset_is_centered_and_scaled() {
+        // 600x337 缩到 96% → 576x324，四周各留 12 / 6 像素
+        let (x, y, w, h) = inset(600, 337, 0.96);
+        assert_eq!((w, h), (576, 324));
+        assert_eq!((x, y), (12, 6));
+        // 留白居中：奇数差时允许 1px 偏差
+        assert!((x - (600 - w - x)).abs() <= 1);
+        assert!((y - (337 - h - y)).abs() <= 1);
+    }
+
+    #[test]
+    fn inset_scale_one_is_noop() {
+        assert_eq!(inset(600, 337, 1.0), (0, 0, 600, 337));
     }
 
     #[test]

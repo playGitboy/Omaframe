@@ -60,6 +60,8 @@ recursive = true
 [display]
 max_width = 600         # "保持比例的最大允许尺寸"，不是强制窗口宽
 max_height = 500
+media_scale = 0.96      # 媒体相对组件的内缩比例：0.96 = 照片四周留 2% 细边
+                        # （解码分辨率也按它缩，省 8% 内存/带宽）
 cache_items = 12
 cache_budget_mb = 32    # 缓存字节预算（低端机可调小）
 max_decode_px = 4096    # 单边解码像素上限

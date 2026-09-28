@@ -123,6 +123,7 @@ impl VideoPlayer {
         }))
     }
 
+    /// 目标显示尺寸（调用方已按 media_scale 折算过）
     pub fn set_box(&self, w: i32, h: i32) {
         self.box_w.set(w.max(16));
         self.box_h.set(h.max(16));
