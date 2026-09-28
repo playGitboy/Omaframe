@@ -4,6 +4,7 @@
 pub mod image;
 pub mod library;
 pub mod source;
+pub mod video;
 
 use std::path::PathBuf;
 

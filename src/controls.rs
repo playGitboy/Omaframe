@@ -198,11 +198,15 @@ impl Controls {
         *self.inner.anim.borrow_mut() = Some(id);
     }
 
-    /// 组件尺寸变化时重置（避免残留脏帧）
-    pub fn reset(&self) {
-        self.inner.anim.borrow_mut().take();
-        self.inner.progress.set(0.0);
+    /// 组件尺寸变化（例如切换图片导致窗口大小变了）：
+    /// 只清掉"当前高亮区域"，**不动淡入淡出状态** ——
+    /// 否则光标还停在组件里时按钮会突然消失。
+    pub fn on_resize(&self) {
         self.inner.zone.set(HitZone::None);
+        let target = if self.inner.hover.get() { 1.0 } else { 0.0 };
+        if (self.inner.progress.get() - target).abs() > 0.001 {
+            self.inner.progress.set(target);
+        }
         self.request_redraw();
     }
 }

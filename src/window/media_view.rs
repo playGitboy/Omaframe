@@ -203,7 +203,7 @@ impl MediaView {
         if imp.content_w.get() != w || imp.content_h.get() != h {
             imp.content_w.set(w);
             imp.content_h.set(h);
-            imp.controls.reset();
+            imp.controls.on_resize();
             self.queue_resize();
         }
     }
@@ -227,6 +227,17 @@ impl MediaView {
             *imp.caption.borrow_mut() = caption.to_string();
             imp.placeholder.set(false);
             imp.logged.set(false);
+        }
+        self.set_content_size(size.0, size.1);
+        self.queue_draw();
+    }
+
+    /// 视频帧纹理（不重置 caption/占位状态）
+    pub fn set_video_frame(&self, texture: Option<gdk::Texture>, size: (i32, i32)) {
+        {
+            let imp = self.imp();
+            *imp.texture.borrow_mut() = texture;
+            imp.placeholder.set(false);
         }
         self.set_content_size(size.0, size.1);
         self.queue_draw();

@@ -9,7 +9,8 @@ use crate::media::library::MediaLibrary;
 use crate::media::{create_source, MediaItem, MediaKind};
 use crate::slideshow::Slideshow;
 use crate::window::monitor_scale;
-use std::cell::RefCell;
+use gtk::prelude::*;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub struct MediaPlayer {
@@ -19,6 +20,10 @@ pub struct MediaPlayer {
     slides: Rc<Slideshow>,
     /// PNG 相框（配置启用时）
     frame: RefCell<Option<Rc<crate::frame::FrameRenderer>>>,
+    /// 视频播放器（无 GStreamer/无解码器时为 None → 跳过视频）
+    video: RefCell<Option<Rc<crate::media::video::VideoPlayer>>>,
+    /// 当前是否是视频（决定控制层按钮语义与轮换行为）
+    current_is_video: Cell<bool>,
 }
 
 impl MediaPlayer {
@@ -61,7 +66,41 @@ impl MediaPlayer {
             images,
             slides,
             frame: RefCell::new(None),
+            video: RefCell::new(None),
+            current_is_video: Cell::new(false),
         });
+
+        // 视频播放器（GStreamer 不可用则降级为纯图片）
+        {
+            let (max_w, max_h, fps, muted) = {
+                let cfg = player.state.config.borrow();
+                (
+                    cfg.display.max_width,
+                    cfg.display.max_height,
+                    cfg.video.max_fps,
+                    cfg.video.muted,
+                )
+            };
+            let connector = player.state.config.borrow().window.monitor.clone();
+            let scale = crate::window::target_monitor(&connector)
+                .as_ref()
+                .map(monitor_scale)
+                .unwrap_or(1.0);
+            let on_event: Rc<dyn Fn(crate::media::video::VideoEvent)> = Rc::new({
+                let p = player.clone();
+                move |ev| p.on_video_event(ev)
+            });
+            let on_frame: Rc<dyn Fn(gdk::Texture, i32, i32)> = Rc::new({
+                let p = player.clone();
+                move |tex, w, h| p.on_video_frame(tex, w, h)
+            });
+            match crate::media::video::VideoPlayer::new(
+                max_w, max_h, fps, muted, scale, on_event, on_frame,
+            ) {
+                Some(v) => *player.video.borrow_mut() = Some(v),
+                None => crate::warn!("视频不可用，本次仅显示图片"),
+            }
+        }
 
         // PNG 相框
         player.load_frame();
@@ -89,8 +128,24 @@ impl MediaPlayer {
         &self.slides
     }
 
+    /// 视频自检：不需要解码器即可验证管线
+    pub fn selftest_video(self: &Rc<Self>) {
+        let Some(v) = self.video.borrow().clone() else {
+            crate::error!("自检失败：视频后端不可用");
+            return;
+        };
+        self.current_is_video.set(true);
+        v.load_test_source();
+    }
+
     /// 启动：后台扫描 → 显示第一项 → 开始轮换
     pub fn start(self: &Rc<Self>) {
+        // 自检模式：跳过媒体目录，直接用测试视频源（不需要任何解码器）
+        if std::env::var_os("PHOTO_FRAME_SELFTEST_VIDEO").is_some() {
+            self.selftest_video();
+            return;
+        }
+
         let this = self.clone();
         self.lib.on_scanned(Box::new(move || {
             this.after_scan();
@@ -123,13 +178,116 @@ impl MediaPlayer {
         let Some(item) = self.lib.current() else {
             return;
         };
+        self.current_is_video.set(item.kind == MediaKind::Video);
         match item.kind {
-            MediaKind::Image => self.show_image(&item),
-            MediaKind::Video => {
-                // Step 5 接入 GStreamer
-                crate::debug!("暂跳过视频：{}", item.file_name());
+            MediaKind::Image => {
+                // 图片播放前先停掉视频，避免两路解码同时吃 CPU
+                if let Some(v) = self.video.borrow().as_ref() {
+                    v.stop();
+                }
+                self.show_image(&item)
+            }
+            MediaKind::Video => self.show_video(&item),
+        }
+        // 控制层按钮图标跟随状态
+        if let Some(w) = self.state.window() {
+            w.view.set_running(self.is_playing());
+        }
+    }
+
+    fn show_video(self: &Rc<Self>, item: &MediaItem) {
+        let Some(player) = self.video.borrow().clone() else {
+            crate::debug!("无视频后端，跳过 {}", item.file_name());
+            return;
+        };
+        let (max_w, max_h, autoplay) = {
+            let cfg = self.state.config.borrow();
+            (
+                cfg.display.max_width,
+                cfg.display.max_height,
+                cfg.video.autoplay,
+            )
+        };
+        player.set_box(max_w, max_h);
+        // 先按配置尺寸占位，拿到视频真实尺寸后再校正（保持比例）
+        if let Some(w) = self.state.window() {
+            w.view.set_image(None, (max_w, max_h), &item.file_name());
+            self.refresh_frame();
+        }
+        player.load(&item.path, autoplay);
+    }
+
+    /// 视频事件（主线程）
+    fn on_video_event(self: &Rc<Self>, ev: crate::media::video::VideoEvent) {
+        use crate::media::video::VideoEvent as E;
+        match ev {
+            E::Eos => {
+                crate::debug!("视频播放结束");
+                if let Some(w) = self.state.window() {
+                    w.view.set_image(None, w.view.content_size(), "");
+                }
+                // complete 模式：播完切下一项；定时模式由轮换计时器负责
+                if self.state.config.borrow().video.mode == "complete" {
+                    self.slides.stop();
+                    self.step(1);
+                    if self.slides.running() {
+                        self.slides.restart();
+                    }
+                }
+            }
+            E::Error(msg) => crate::warn!("视频错误：{msg}"),
+            E::Playing(p) => {
+                if let Some(w) = self.state.window() {
+                    w.view.set_running(p);
+                }
             }
         }
+    }
+
+    /// 视频帧（主线程）：只在尺寸变化时调整组件大小
+    fn on_video_frame(self: &Rc<Self>, tex: gdk::Texture, w: i32, h: i32) {
+        let Some(window) = self.state.window() else {
+            return;
+        };
+        let connector = self.state.config.borrow().window.monitor.clone();
+        let scale = crate::window::target_monitor(&connector)
+            .as_ref()
+            .map(monitor_scale)
+            .unwrap_or(1.0);
+        let logical = (
+            ((w as f64 / scale).round() as i32).max(1),
+            ((h as f64 / scale).round() as i32).max(1),
+        );
+        let cur = window.view.content_size();
+        if cur != logical {
+            window.view.set_content_size(logical.0, logical.1);
+            let changed = {
+                let cfg = self.state.config.borrow();
+                cfg.window.width != logical.0 || cfg.window.height != logical.1
+            };
+            if changed {
+                self.state.edit(|c| {
+                    c.window.width = logical.0;
+                    c.window.height = logical.1;
+                });
+                self.state.commit();
+            }
+            self.refresh_frame();
+        }
+        window.view.set_video_frame(Some(tex), logical);
+    }
+
+    /// 当前是否在播放（图片看轮换，视频看管线状态）
+    pub fn is_playing(&self) -> bool {
+        if self.current_is_video.get() {
+            return self
+                .video
+                .borrow()
+                .as_ref()
+                .map(|v| v.is_playing())
+                .unwrap_or(false);
+        }
+        self.slides.running()
     }
 
     /// 解码目标盒：逻辑尺寸 × 屏幕缩放（HiDPI 下更清晰），上限由配置兜底
@@ -305,14 +463,10 @@ impl MediaPlayer {
 
     /// 控制层：播放/暂停（视频 → 播放暂停；图片 → 轮换暂停继续）
     pub fn toggle_play(self: &Rc<Self>) {
-        let is_video = self
-            .lib
-            .current()
-            .map(|i| i.kind == MediaKind::Video)
-            .unwrap_or(false);
-        if is_video {
-            // Step 6 接入 GStreamer 播放控制
-            crate::debug!("视频播放/暂停（Step 6）");
+        if self.current_is_video.get() {
+            if let Some(v) = self.video.borrow().as_ref() {
+                v.set_playing(!v.is_playing());
+            }
             return;
         }
         let paused = self.slides.toggle_paused();
@@ -322,9 +476,23 @@ impl MediaPlayer {
         }
     }
 
-    /// 被窗口覆盖 / 恢复
+    /// 被窗口覆盖 / 恢复：图片停轮换、视频暂停管线（省 CPU）
     pub fn set_active(self: &Rc<Self>, active: bool) {
         self.slides.set_active(active);
+        if !active {
+            if let Some(v) = self.video.borrow().as_ref() {
+                if v.is_playing() {
+                    v.set_playing(false);
+                }
+            }
+        } else if self.current_is_video.get() {
+            let autoplay = self.state.config.borrow().video.autoplay;
+            if autoplay {
+                if let Some(v) = self.video.borrow().as_ref() {
+                    v.set_playing(true);
+                }
+            }
+        }
     }
 
     /// 重新扫描（设置里改了目录时调用）

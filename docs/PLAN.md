@@ -115,6 +115,8 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
 ```
 
 - 控件全部由 `MediaView` 自绘（cairo 圆底 + 白色矢量图标），不依赖图标主题。
+- **光标未移出组件时，按钮保持显示**：切换媒体会改变组件尺寸，
+  此时只清"高亮区域"、不动淡入淡出状态（`Controls::on_resize`）。
 - 按钮位置由 `controls::ControlLayout` 统一计算，**绘制与命中检测共用同一套矩形** → 不会出现"看得见点不到"。
 - 播放/暂停语义：当前是**视频** → 切换播放/暂停；当前是**图片** → 切换自动轮换的暂停/继续。
 - 图标状态：运行中显示 `⏸`（点击暂停），暂停时显示 `▶`（点击继续）。
@@ -129,8 +131,12 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
 2. ✅ 依赖编译验证 + layer-shell 窗口（不抢焦点 / 不进平铺 / 被普通窗口覆盖，已实测）
 3. ✅ 本地图片：后台扫描、异步解码、`fit()` 自适应、预取与 LRU（实测 6016x3384 → 600x338）
 4. ⏳ 悬停交互控制（左右切换 + 底部中央播放/暂停）+ 默认位置改左上角
-5. ⏳ PNG 相框 overlay
-6. ⏳ 视频：CPU 管线 + 播放状态（测 CPU）
+5. ✅ PNG 相框 overlay（透明 PNG 叠在媒体之上）
+6. ✅ 视频：CPU 管线（`playbin` + `videoconvert/videoscale/capsfilter/appsink` → `GdkMemoryTexture`）
+   - 实测：1200x675@30fps → CPU ≈ 3%；被覆盖/暂停时 `PAUSED`，CPU 归零
+   - ⚠️ 本机 GStreamer 只装了 base 插件（无 h264/vp8/theora/matroska 解码器），
+     真实 mp4/webm 暂无法播放；已加**自检模式** `PHOTO_FRAME_SELFTEST_VIDEO=1`
+     （videotestsrc，不需要任何解码器）验证整条管线
 7. ⏳ 轮换 + 随机 + 视频播完再切
 8. ⏳ 被窗口覆盖则暂停（Hyprland IPC 事件流）
 9. ⏳ 右下角 resize（保持比例、不可为 0、不超 max）
@@ -139,3 +145,19 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
 12. ⏳ `~/.config/autostart` 自启 + 卸载脚本
 
 验收场景按用户清单 1~13 逐条实测。
+
+
+## 7. 踩坑记录（本机实测，避免以后重走）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 相框窗口一启动就退出 | `gtk::Window` 没挂到 Application，GApplication 认为没有窗口 | `window.set_application(Some(&app))` |
+| 出现在 `hyprctl clients` / 会参与平铺 | 用的是普通 toplevel | 改用 `gtk4-layer-shell`（bottom 层） |
+| 收不到鼠标事件 | 自定义 widget + layer-shell 组合下 surface 输入区域为空 | 显式 `gdk::Surface::set_input_region` |
+| 图片被拉伸变形 | `gdk_pixbuf_loader_set_size` 会**拉伸到指定尺寸**，不保比例 | 先用 `Pixbuf::file_info` 探原始尺寸，自己算 `fit()` 再 set_size |
+| 解出来的图全黑/全透明 | `composite()` 的 `overall_alpha` 传了 -1，被 gdk-pixbuf 拒绝 | 传 255 |
+| `glib::clone!` 找不到 | **glib 0.22 已移除该宏** | 改用 `glib::WeakRef` + `thread_local` 桥接 |
+| `GdkTexture` 不显示 | 像素数据格式必须是预乘 BGRA | 统一 `composite` 到 ARGB32 缓冲区 |
+| 点击后按钮消失 | 切图导致尺寸变化，`Controls::reset()` 把透明度清零 | 改为 `on_resize()`：hover 中保持不透明 |
+| 程序偶发崩溃 | `Object::set_property` 属性不存在/类型不符会 **panic→abort** | 全部改用 `set_prop_safe`（先查属性+类型，只告警），并在 GStreamer 回调里 `catch_unwind` 隔离 |
+| 视频跑满一个核 | 自检 bin 用的是 `Bin`（无 clock），`sync` 不节流 | 自检改用 `Pipeline`；实测 29.5fps / CPU 3% |
