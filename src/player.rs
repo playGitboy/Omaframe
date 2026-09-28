@@ -250,22 +250,49 @@ impl MediaPlayer {
                 }
             }
             DragPhase::End => {
-                if self.drag.borrow().active {
-                    self.drag.borrow_mut().active = false;
-                    window.view.set_visual_offset(0.0, 0.0);
-                    window.set_drag_padding_full(0, false);
-                    // 重新贴回记录的位置（surface 重建后边距可能丢失）
-                    let (px, py) = {
+                let (active, was_resize, moved) = {
+                    let d = self.drag.borrow();
+                    (d.active, d.mode_is_resize, d.moved)
+                };
+                if !active {
+                    return;
+                }
+                {
+                    let mut d = self.drag.borrow_mut();
+                    d.active = false;
+                    d.padded = false;
+                    d.moved = false;
+                }
+                // 只是点了一下（没移动）→ 什么都不做，避免跳动与"黑屏"
+                if !moved {
+                    return;
+                }
+                window.view.set_visual_offset(0.0, 0.0);
+                if was_resize {
+                    // 预览结束：把最终尺寸真正应用上去（surface 只在这里变一次）
+                    let (nw, nh) = {
                         let cfg = self.state.config.borrow();
-                        (cfg.window.x, cfg.window.y)
+                        (cfg.display.max_width, cfg.display.max_height)
                     };
-                    window.set_position(px, py);
-                    window.sync_input_region();
-                    self.state.commit();
-                    self.refresh_visibility_rect();
-                    if let Some(w) = self.state.window() {
-                        w.update_hud(&self.state, "");
-                    }
+                    window.view.set_preview_size(0, 0);
+                    window.set_size(nw, nh);
+                    self.state.edit(|c| {
+                        c.window.width = nw;
+                        c.window.height = nh;
+                    });
+                    self.refresh_frame();
+                }
+                // 重新贴回记录的位置
+                let (px, py) = {
+                    let cfg = self.state.config.borrow();
+                    (cfg.window.x, cfg.window.y)
+                };
+                window.set_position(px, py);
+                window.sync_input_region();
+                self.state.commit();
+                self.refresh_visibility_rect();
+                if let Some(w) = self.state.window() {
+                    w.update_hud(&self.state, "");
                 }
             }
         }

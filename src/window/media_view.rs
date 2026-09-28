@@ -42,9 +42,12 @@ mod imp {
         /// 拖动时的视觉偏移（只改绘制，widget 几何不动）
         pub offset_x: Cell<f64>,
         pub offset_y: Cell<f64>,
-        /// 拖动时额外的控件区域：指针可以走出组件，但控件**原点不动**
-        /// （因此"控件坐标 = 屏幕坐标 - 组件位置"始终成立）
+        /// 拖动时额外的控件区域（**保持 0**：一旦放大控件就会重建 layer surface，
+        /// 合成器会把新 surface 画成不透明黑块 —— 用户报的"放大黑屏"就是这个）
         pub drag_pad: Cell<i32>,
+        /// 改大小拖动中的目标尺寸（0,0 = 无预览）
+        pub preview_w: Cell<i32>,
+        pub preview_h: Cell<i32>,
         /// 最近一次指针在控件内的位置（拖动位移用它算，不依赖 GTK 的 delta）
         pub last_x: Cell<f64>,
         pub last_y: Cell<f64>,
@@ -81,13 +84,20 @@ mod imp {
             }
             let w = self.content_w.get().max(1) as f32;
             let h = self.content_h.get().max(1) as f32;
-            let rect = gtk::graphene::Rect::new(0.0, 0.0, w, h);
 
-            // 拖动视觉偏移：把内容整体平移绘制
+            // 拖动视觉偏移：把内容整体平移绘制（控件尺寸不变 → surface 不重建）
             let (ox, oy) = (self.offset_x.get(), self.offset_y.get());
             if ox != 0.0 || oy != 0.0 {
                 snapshot.translate(&gtk::graphene::Point::new(ox as f32, oy as f32));
             }
+
+            // 改大小预览：媒体画在目标尺寸处（不超过控件本体，surface 尺寸不变）
+            let (pw, ph) = if self.preview_w.get() > 0 {
+                (self.preview_w.get(), self.preview_h.get())
+            } else {
+                (self.content_w.get(), self.content_h.get())
+            };
+            let rect = gtk::graphene::Rect::new(0.0, 0.0, pw as f32, ph as f32);
             let texture = self.texture.borrow().clone();
             match texture {
                 Some(tex) => {
@@ -111,6 +121,16 @@ mod imp {
                     cr.rectangle(1.0, 1.0, w as f64 - 2.0, h as f64 - 2.0);
                     let _ = cr.stroke();
                 }
+            }
+
+            // 预览时用虚线框出目标范围（"还能再拖多大"一目了然）
+            if self.preview_w.get() > 0 {
+                let cr = snapshot.append_cairo(&rect);
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
+                cr.set_line_width(1.5);
+                cr.set_dash(&[5.0, 4.0], 0.0);
+                cr.rectangle(0.75, 0.75, (pw - 1) as f64, (ph - 1) as f64);
+                let _ = cr.stroke();
             }
 
             // PNG 相框覆盖在媒体之上
@@ -357,14 +377,21 @@ impl MediaView {
         *self.imp().on_drag.borrow_mut() = Some(std::rc::Rc::new(cb));
     }
 
-    /// 拖动时给 widget 增加活动区域（指针可走出组件，坐标保持稳定）
-    pub fn set_drag_pad(&self, px: i32) {
-        let px = px.max(0);
-        if self.imp().drag_pad.replace(px) == px {
+    /// 改大小拖动中的目标尺寸（只影响绘制，不改变控件/窗口尺寸）
+    pub fn set_preview_size(&self, w: i32, h: i32) {
+        let (w, h) = (w.max(0), h.max(0));
+        let imp = self.imp();
+        if imp.preview_w.get() == w && imp.preview_h.get() == h {
             return;
         }
-        self.queue_resize();
+        imp.preview_w.set(w);
+        imp.preview_h.set(h);
         self.queue_draw();
+    }
+
+    /// 保留接口但**不再放大控件**：放大控件会重建 layer surface 并出现黑屏
+    pub fn set_drag_pad(&self, _px: i32) {
+        self.imp().drag_pad.set(0);
     }
 
     /// 拖动时的视觉偏移（不改变 widget 几何）
