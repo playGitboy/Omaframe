@@ -161,6 +161,8 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
 | `GdkTexture` 不显示 | 像素数据格式必须是预乘 BGRA | 统一 `composite` 到 ARGB32 缓冲区 |
 | 点击后按钮消失 | 切图导致尺寸变化，`Controls::reset()` 把透明度清零 | 改为 `on_resize()`：hover 中保持不透明 |
 | 程序偶发崩溃 | `Object::set_property` 属性不存在/类型不符会 **panic→abort** | 全部改用 `set_prop_safe`（先查属性+类型，只告警），并在 GStreamer 回调里 `catch_unwind` 隔离 |
+| 右下角缩放卡顿 | 拖动中**每帧都在改组件真实尺寸** → layer surface 每次都重新配置 | 拖动中只更新**预览绘制**（媒体画在目标尺寸处），松手才应用一次；预览由 16ms 计时器驱动，与手势事件速率解耦；屏幕尺寸在 Begin 时缓存一次；位移取 dx/dy 中**绝对值较大**的轴（跟手） |
+| 相框"最外层黑色" | ① 自制 frame.png 的 alpha 遮罩把四角留成不透明纯黑；② 媒体没就位时画的深色占位底板；③ 窗口底色未显式声明透明 | 遮罩改为"外圈圆角 − 中心圆角"（四角透明）；占位板改为不填充、只描细边；窗口加 `background: transparent` CSS |
 | 点击/按住/拖动时出现"放大黑屏" | 拖动中**放大了 widget/窗口**（活动余量），layer surface 被重建/重新配置，合成器把新 surface 画成不透明黑块 | 拖动全程**不改变 surface 尺寸**：移动靠"绘制偏移"（内容跟随指针），改大小靠"预览绘制"（媒体画在目标尺寸处），松手才应用一次。`set_margin` 边距没变时也不再触发重新配置 |
 | 视频跑满一个核 | 自检 bin 用的是 `Bin`（无 clock），`sync` 不节流 | 自检改用 `Pipeline`；实测 29.5fps / CPU 3% |
 

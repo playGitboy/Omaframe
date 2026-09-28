@@ -122,18 +122,16 @@ mod imp {
                     snapshot.append_texture(&tex, &media_rect);
                 }
                 None => {
-                    if !self.placeholder.get() {
-                        return;
+                    // 没有媒体时**不画任何底色**：layer surface 若画出深色底，
+                    // 合成器会把它当成不透明黑块（用户看到的"外层黑色"）。
+                    if self.placeholder.get() {
+                        let cr = snapshot.append_cairo(&media_rect);
+                        // 只画一圈极细的提示描边，不填充
+                        cr.set_source_rgba(0.55, 0.75, 1.0, 0.35);
+                        cr.set_line_width(1.0);
+                        cr.rectangle(0.5, 0.5, mw as f64 - 1.0, mh as f64 - 1.0);
+                        let _ = cr.stroke();
                     }
-                    // 占位底板，方便肉眼确认位置与实际尺寸
-                    let cr = snapshot.append_cairo(&media_rect);
-                    cr.set_source_rgba(0.13, 0.13, 0.15, 0.92);
-                    cr.rectangle(0.0, 0.0, mw as f64, mh as f64);
-                    let _ = cr.fill();
-                    cr.set_source_rgba(0.55, 0.75, 1.0, 0.9);
-                    cr.set_line_width(2.0);
-                    cr.rectangle(1.0, 1.0, mw as f64 - 2.0, mh as f64 - 2.0);
-                    let _ = cr.stroke();
                 }
             }
 

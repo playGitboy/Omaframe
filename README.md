@@ -80,6 +80,8 @@ max_fps = 30
 [frame]
 enabled = true
 path = "~/.config/omarchy-photo-frame/frame.png"   # 透明 PNG，叠在媒体之上
+# 相框 PNG 建议：900x760 左右，两层圆角框，**四角与中心都透明**；
+# 框宽（外沿到内孔）约 60/900 ≈ 6.7%，比媒体内缩 4% 略大，看起来才有"卡纸"感
 
 [window]
 x = 32

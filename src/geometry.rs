@@ -21,6 +21,50 @@ pub fn inset(w: i32, h: i32, scale: f64) -> (i32, i32, i32, i32) {
     ((w - iw) / 2, (h - ih) / 2, iw.min(w), ih.min(h))
 }
 
+/// 右下角拖动的目标尺寸计算（纯函数，便于测试）
+/// - `delta` 取 dx/dy 中较大者（正=放大，负=缩小）
+/// - 始终保持 `aspect`，并夹在最小尺寸与屏幕可用空间之间
+#[allow(clippy::too_many_arguments)]
+pub fn resize_target(
+    cur_w: f64,
+    aspect: f64,
+    dx: f64,
+    dy: f64,
+    avail_w: f64,
+    avail_h: f64,
+    min_w: f64,
+    min_h: f64,
+) -> (i32, i32) {
+    let aspect = if aspect.is_finite() && aspect > 0.01 {
+        aspect
+    } else {
+        1.0
+    };
+    let delta = if dx.abs() >= dy.abs() { dx } else { dy };
+    let mut w = cur_w + delta;
+    let mut h = w / aspect;
+    if h < min_h {
+        h = min_h;
+        w = h * aspect;
+    }
+    if w < min_w {
+        w = min_w;
+        h = w / aspect;
+    }
+    if w > avail_w {
+        w = avail_w;
+        h = w / aspect;
+    }
+    if h > avail_h {
+        h = avail_h;
+        w = h * aspect;
+    }
+    (
+        w.round().clamp(min_w, 1.0e9) as i32,
+        h.round().clamp(min_h, 1.0e9) as i32,
+    )
+}
+
 pub fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
     if hi < lo {
         return lo;
@@ -100,6 +144,25 @@ mod tests {
     #[test]
     fn inset_scale_one_is_noop() {
         assert_eq!(inset(600, 337, 1.0), (0, 0, 600, 337));
+    }
+
+    #[test]
+    fn resize_keeps_aspect_and_clamps() {
+        // 当前 600x338（比例 1.775），向右下拖 +100/+60 → 取较大位移 100
+        let (w, h) = resize_target(600.0, 600.0 / 338.0, 100.0, 60.0, 1000.0, 800.0, 160.0, 120.0);
+        assert_eq!((w, h), (700, 394));
+        // 缩小：|dy| > |dx| → 跟 dy（-60）
+        let (w, h) = resize_target(600.0, 600.0 / 338.0, -30.0, -60.0, 1000.0, 800.0, 160.0, 120.0);
+        assert_eq!((w, h), (540, 304));
+        // 缩小：|dx| > |dy| → 跟 dx（-100）
+        let (w, h) = resize_target(600.0, 600.0 / 338.0, -100.0, -20.0, 1000.0, 800.0, 160.0, 120.0);
+        assert_eq!((w, h), (500, 282));
+        // 不会小于最小尺寸
+        let (w, h) = resize_target(200.0, 1.5, -5000.0, -5000.0, 1000.0, 800.0, 160.0, 120.0);
+        assert_eq!((w, h), (180, 120));
+        // 不会超过屏幕剩余空间
+        let (w, h) = resize_target(600.0, 2.0, 5000.0, 5000.0, 800.0, 600.0, 160.0, 120.0);
+        assert_eq!((w, h), (800, 400));
     }
 
     #[test]
