@@ -144,6 +144,8 @@ impl FrameWindow {
     fn set_size_hook_sync(&self) {
         let weak: glib::WeakRef<gtk::Window> = glib::WeakRef::new();
         weak.set(Some(&self.window));
+        let view_weak: glib::WeakRef<MediaView> = glib::WeakRef::new();
+        view_weak.set(Some(&self.view));
         // 上面的闭包只借用 window；last_region 用 WeakRef 之外的办法拿不到，
         // 所以改成只读日志（不依赖 self）
         self.view.set_size_hook(move || {

@@ -50,6 +50,8 @@ mod imp {
         /// 最近一次指针在控件内的位置（拖动位移用它算，不依赖 GTK 的 delta）
         pub last_x: Cell<f64>,
         pub last_y: Cell<f64>,
+        /// 最近一次绘制时素材（=相框）的矩形：命中检测与输入区域都用它
+        pub last_frame_rect: Cell<(f64, f64, f64, f64)>,
     }
 
     #[glib::object_subclass]
@@ -117,6 +119,8 @@ mod imp {
                 mw as f32,
                 mh as f32,
             );
+            self.last_frame_rect
+                .set((mx as f64, my as f64, mw as f64, mh as f64));
 
             let texture = texture0;
             match texture {
@@ -142,7 +146,7 @@ mod imp {
 
             // 预览时用虚线框出目标范围（"还能再拖多大"一目了然）
             if self.preview_w.get() > 0 {
-                let cr = snapshot.append_cairo(&rect);
+                let cr = snapshot.append_cairo(&media_rect);
                 cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
                 cr.set_line_width(1.5);
                 cr.set_dash(&[5.0, 4.0], 0.0);
@@ -150,15 +154,18 @@ mod imp {
                 let _ = cr.stroke();
             }
 
-            // PNG 相框覆盖在媒体之上
+            // PNG 相框**贴合素材矩形**绘制（画布只是上限，不是相框）
             if let Some(frame) = self.frame.borrow().as_ref() {
-                snapshot.append_texture(frame, &rect);
+                snapshot.append_texture(frame, &media_rect);
             }
 
-            // 悬停控制层（最上层）
-            let layout = ControlLayout::new(self.content_w.get(), self.content_h.get());
-            let cr = snapshot.append_cairo(&rect);
+            // 悬停控制层：以**素材矩形**为基准，画在相框内侧底部
+            let layout = ControlLayout::new(mw, mh);
+            snapshot.save();
+            snapshot.translate(&gtk::graphene::Point::new(mx as f32, my as f32));
+            let cr = snapshot.append_cairo(&media_rect);
             crate::controls::paint(&cr, &layout, &self.controls);
+            snapshot.restore();
         }
     }
 }
@@ -227,9 +234,10 @@ impl MediaView {
         let wd = weak.clone();
         drag.connect_drag_begin(move |_, x, y| {
             let Some(v) = wd.upgrade() else { return };
-            let layout = ControlLayout::new(v.imp().content_w.get(), v.imp().content_h.get());
+            let (fx, fy, fw, fh) = v.frame_rect();
+            let layout = ControlLayout::new(fw as i32, fh as i32);
             // 播放/暂停按钮上不启动拖动（留给点击）；其余都可以拖
-            let Some(mode) = layout.drag_mode_at(x, y) else {
+            let Some(mode) = layout.drag_mode_at(x - fx, y - fy) else {
                 return;
             };
             let handler = v.imp().on_drag.borrow().clone();
@@ -282,8 +290,9 @@ impl MediaView {
             if (x - imp.press_x.get()).abs() > 6.0 || (y - imp.press_y.get()).abs() > 6.0 {
                 return; // 按下→松开位移大 = 拖动，不是点击
             }
-            let layout = ControlLayout::new(imp.content_w.get(), imp.content_h.get());
-            let zone = layout.hit(x, y);
+            let (fx, fy, fw, fh) = v.frame_rect();
+            let layout = ControlLayout::new(fw as i32, fh as i32);
+            let zone = layout.hit(x - fx, y - fy);
             if zone == HitZone::None {
                 return;
             }
@@ -301,12 +310,41 @@ impl MediaView {
         (self.imp().last_x.get(), self.imp().last_y.get())
     }
 
+    /// 素材（=相框）在控件内的矩形：画布是上限，相框贴合素材
+    pub fn frame_rect(&self) -> (f64, f64, f64, f64) {
+        let imp = self.imp();
+        if imp.preview_w.get() > 0 {
+            let (w, h) = (imp.preview_w.get(), imp.preview_h.get());
+            let (x, y, w, h) = crate::geometry::fit_rect(
+                w,
+                h,
+                imp.content_w.get(),
+                imp.content_h.get(),
+                imp.media_scale.get(),
+            );
+            return (x as f64, y as f64, w as f64, h as f64);
+        }
+        let (bx, by, bw, bh) = imp.last_frame_rect.get();
+        if bw <= 0.0 || bh <= 0.0 {
+            // snapshot 还没跑过：按画布内缩估算
+            let (x, y, w, h) = crate::geometry::inset(
+                imp.content_w.get(),
+                imp.content_h.get(),
+                imp.media_scale.get(),
+            );
+            return (x as f64, y as f64, w as f64, h as f64);
+        }
+        (bx, by, bw, bh)
+    }
+
     fn update_zone(&self, x: f64, y: f64) {
         let imp = self.imp();
         imp.last_x.set(x);
         imp.last_y.set(y);
-        let layout = ControlLayout::new(imp.content_w.get(), imp.content_h.get());
-        let zone = layout.hit(x, y);
+        // 命中检测以**相框矩形**为基准（画布只是上限）
+        let (fx, fy, fw, fh) = self.frame_rect();
+        let layout = ControlLayout::new(fw as i32, fh as i32);
+        let zone = layout.hit(x - fx, y - fy);
         imp.controls.set_zone(zone);
         self.set_cursor_name(match zone {
             HitZone::Resize => Some("nwse-resize"),

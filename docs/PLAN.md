@@ -209,3 +209,14 @@ GTK 的 `GestureDrag` delta 是**相对拖动起点、在 widget 坐标系里**�
 | 轮播到头"退出又打开" | 换素材时 surface 尺寸变化 → 重建 | 同上：**固定画布**后 surface 永不重建（实测 24 帧连续切换亮度无掉帧） |
 | 状态栏图标点了没反应 | quickshell 按 SNI 规范发 `Activate(ii)`（x,y 两个参数），我只声明了一个 → GDBus 以 InvalidArgs 拒绝，调用没进我们代码 | XML 声明改成两个参数；另外把不存在的 `Menu` 属性去掉（避免宿主去打开一个空菜单） |
 | 设置页过大 | ① Adw 默认行距大；② 设置窗被当普通窗口**平铺**了 | 压缩 CSS（行高 30px / entry 24px / switch 42px）；窗口 `set_resizable(false)` + 固定 400×560 → 合成器自动当对话框浮动 |
+
+### 10.1 画布语义（最终定案）
+
+`max_width × max_height` 是**上限**，不是固定尺寸：
+
+- layer surface 固定为该上限 → 素材切换时**不重建**（消除闪黑/残影/闪窗）
+- 素材矩形 = `fit(素材比例, 上限 × media_scale)`，居中
+- **相框 PNG 与悬停控制层都画在素材矩形上** → 视觉上相框贴合照片
+- **输入区域也设为素材矩形** → 画布留白处点击穿透（实测：点中央有 `pointer enter`，点留白无任何事件）
+
+分辨率与坐标换算都在 `geometry::fit_rect()`，有单测。

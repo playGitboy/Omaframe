@@ -44,10 +44,19 @@ PHOTO_FRAME_LOG=debug photo-frame   # 调试日志
 
 ## 窗口架构（重要）
 
-相框的 layer surface 尺寸**固定为 `max_width × max_height`**，图片/视频在框内按自身比例缩放并居中
-（`media_scale` 再内缩 4%），相框 PNG 叠在同一矩形上。
+`max_width × max_height` 是**上限画布**，不是相框大小：
 
-这样做的收益：切换素材时 **surface 尺寸恒定 → 永不重建**，所以没有"闪黑""残影""切换时窗口闪一下"。
+```
+layer surface（固定 = max_width × max_height，只有它存在时不重建）
+└── 素材矩形 = fit(素材比例, max_width×media_scale, max_height×media_scale)，居中
+    ├── 图片/视频（按素材矩形 1:1 绘制）
+    ├── PNG 相框（贴合素材矩形 → 视觉上"框随照片"）
+    └── 悬停控制层（贴在素材矩形内底部）
+```
+
+* **相框贴合素材**：换横图/竖图时相框跟着变，画布只保证"不超过上限"。
+* **layer surface 尺寸恒定 → 永不重建**：所以没有"闪黑""残影""切换素材时窗口闪一下"。
+* **输入区域 = 素材矩形**：画布留白处的鼠标事件穿透到桌面，不会挡住其他操作。
 
 ## 交互
 
