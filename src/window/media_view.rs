@@ -7,12 +7,14 @@
 //! 特定位置、视频需要每帧重绘，而且 GtkPicture 会被图片自然尺寸撑爆窗口。
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
-use crate::controls::{ControlLayout, Controls, HitZone};
+use crate::controls::{ControlLayout, Controls, DragMode, HitZone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
 type ClickHandler = std::rc::Rc<dyn Fn(HitZone)>;
+type DragHandler = std::rc::Rc<dyn Fn(crate::controls::DragPhase)>;
 
 mod imp {
     use super::*;
@@ -30,6 +32,12 @@ mod imp {
         pub caption: RefCell<String>,
         pub logged: Cell<bool>,
         pub on_click: RefCell<Option<ClickHandler>>,
+        pub on_drag: RefCell<Option<DragHandler>>,
+        /// 尺寸变化回调（FrameWindow 用它同步 surface 输入区域）
+        pub size_hook: RefCell<Option<Rc<dyn Fn()>>>,
+        /// 拖动时的视觉偏移（只改绘制，widget 几何不动 → drag-delta 保持真实）
+        pub offset_x: Cell<f64>,
+        pub offset_y: Cell<f64>,
     }
 
     #[glib::object_subclass]
@@ -52,10 +60,20 @@ mod imp {
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
+            // 此刻分配已完成：通知外部同步 surface 输入区域 / 边距
+            let hook = self.size_hook.borrow().clone();
+            if let Some(h) = hook {
+                h();
+            }
             let w = self.content_w.get().max(1) as f32;
             let h = self.content_h.get().max(1) as f32;
             let rect = gtk::graphene::Rect::new(0.0, 0.0, w, h);
 
+            // 拖动视觉偏移：把内容整体平移绘制
+            let (ox, oy) = (self.offset_x.get(), self.offset_y.get());
+            if ox != 0.0 || oy != 0.0 {
+                snapshot.translate(&gtk::graphene::Point::new(ox as f32, oy as f32));
+            }
             let texture = self.texture.borrow().clone();
             match texture {
                 Some(tex) => {
@@ -149,6 +167,46 @@ impl MediaView {
             }
         });
         self.add_controller(motion);
+
+        // 拖动：移动组件（body）/ 右下角改大小（Resize 热区）
+        // 注：坐标要用 gtk_gesture_drag_get_start_point/delta 拿，信号本身不带坐标。
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(0);
+        let wd = weak.clone();
+        drag.connect_drag_begin(move |_, x, y| {
+            let Some(v) = wd.upgrade() else { return };
+            let layout = ControlLayout::new(v.imp().content_w.get(), v.imp().content_h.get());
+            let zone = layout.hit(x, y);
+            // 按在控制按钮上时不启动拖动（留给点击手势）
+            let mode = match zone {
+                HitZone::Resize => DragMode::Resize,
+                HitZone::None => DragMode::Move,
+                _ => return,
+            };
+            let handler = v.imp().on_drag.borrow().clone();
+            if let Some(cb) = handler {
+                cb(crate::controls::DragPhase::Begin(mode, x, y));
+            }
+        });
+        let wu = weak.clone();
+        drag.connect_drag_update(move |_, dx, dy| {
+            if let Some(v) = wu.upgrade() {
+                let handler = v.imp().on_drag.borrow().clone();
+                if let Some(cb) = handler {
+                    cb(crate::controls::DragPhase::Update(dx, dy));
+                }
+            }
+        });
+        let we = weak.clone();
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(v) = we.upgrade() {
+                let handler = v.imp().on_drag.borrow().clone();
+                if let Some(cb) = handler {
+                    cb(crate::controls::DragPhase::End);
+                }
+            }
+        });
+        self.add_controller(drag);
 
         // 点击：命中区域交给外部（播放器）处理
         let click = gtk::GestureClick::new();
@@ -258,6 +316,27 @@ impl MediaView {
     /// 点击回调（主线程）
     pub fn set_click_handler(&self, cb: impl Fn(HitZone) + 'static) {
         *self.imp().on_click.borrow_mut() = Some(std::rc::Rc::new(cb));
+    }
+
+    /// 拖动回调（主线程）：移动组件 / 右下角改大小
+    pub fn set_drag_handler(&self, cb: impl Fn(crate::controls::DragPhase) + 'static) {
+        *self.imp().on_drag.borrow_mut() = Some(std::rc::Rc::new(cb));
+    }
+
+    /// 拖动时的视觉偏移（不改变 widget 几何）
+    pub fn set_visual_offset(&self, dx: f64, dy: f64) {
+        let imp = self.imp();
+        if imp.offset_x.get() == dx && imp.offset_y.get() == dy {
+            return;
+        }
+        imp.offset_x.set(dx);
+        imp.offset_y.set(dy);
+        self.queue_draw();
+    }
+
+    /// 绘制/分配完成后回调（主线程）：用于同步 surface 输入区域、边距
+    pub fn set_size_hook(&self, cb: impl Fn() + 'static) {
+        *self.imp().size_hook.borrow_mut() = Some(std::rc::Rc::new(cb));
     }
 
     pub fn caption(&self) -> String {

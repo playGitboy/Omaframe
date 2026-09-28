@@ -14,6 +14,8 @@ pub struct AppState {
     pub backend: Backend,
     pub window: RefCell<Option<Rc<FrameWindow>>>,
     pub player: RefCell<Option<Rc<crate::player::MediaPlayer>>>,
+    /// Hyprland 覆盖检测（不可用时为 None）
+    pub visibility: RefCell<Option<Rc<crate::hypr::VisibilityMonitor>>>,
     /// 配置是否刚刚被程序修改过（退出时需要再存一次）
     pub dirty: std::cell::Cell<bool>,
 }
@@ -96,6 +98,7 @@ impl AppState {
             backend,
             window: RefCell::new(None),
             player: RefCell::new(None),
+            visibility: RefCell::new(None),
             dirty: std::cell::Cell::new(needs_save),
         });
 
@@ -201,13 +204,34 @@ pub fn run(args: &[String]) -> Result<u8, String> {
         if app_state.window.borrow().is_none() {
             let fw = Rc::new(FrameWindow::new(app_state.clone(), app));
             fw.present();
+            // 调试：启动即应用拖动余量（验证负 margin 是否被支持）
+            if let Some(pad) = std::env::var("PHOTO_FRAME_DRAG_PAD").ok().and_then(|v| v.parse().ok()) {
+                fw.set_drag_padding_full(pad, true);
+            }
             fw.update_hud(&app_state, "");
-            *app_state.window.borrow_mut() = Some(fw);
+            *app_state.window.borrow_mut() = Some(fw.clone());
             crate::info!("相框窗口已显示");
 
             if let Some(player) = crate::player::MediaPlayer::new(app_state.clone()) {
                 player.start();
-                *app_state.player.borrow_mut() = Some(player);
+                *app_state.player.borrow_mut() = Some(player.clone());
+
+                // 「被窗口覆盖则暂停」：Hyprland IPC 事件驱动
+                let (mx, my) = {
+                    let cfg = app_state.config.borrow();
+                    (cfg.window.x, cfg.window.y)
+                };
+                let (vw, vh) = fw.view.content_size();
+                let monitor = crate::hypr::VisibilityMonitor::start(crate::hypr::Rect {
+                    x: mx,
+                    // Hyprland 会把层 surface 放在 bar 之下，用一点余量避免误判
+                    y: my,
+                    w: vw,
+                    h: vh,
+                });
+                let p2 = player.clone();
+                monitor.on_change(move |visible| p2.set_active(visible));
+                *app_state.visibility.borrow_mut() = Some(monitor);
             }
         }
     });

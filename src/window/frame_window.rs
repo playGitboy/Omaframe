@@ -19,6 +19,12 @@ pub struct FrameWindow {
     pub view: MediaView,
     root: gtk::Overlay,
     hud: RefCell<Option<gtk::Label>>,
+    /// 当前的拖动余量（像素）
+    pad: std::cell::Cell<i32>,
+    /// 余量是否四边对称（true = 需要负边距向左上扩张）
+    pad_sym: std::cell::Cell<bool>,
+    /// 组件左上角在屏幕上的位置
+    pos: std::cell::Cell<(i32, i32)>,
 }
 
 impl FrameWindow {
@@ -39,6 +45,8 @@ impl FrameWindow {
         view.set_content_size(w, h);
         view.set_placeholder(true);
 
+        // view 直接作为 Overlay 的子控件：拖动时给它加 margin，
+        // 窗口自然尺寸 = 组件 + 2*margin（内容视觉位置不变）
         let root = gtk::Overlay::new();
         root.set_child(Some(&view));
 
@@ -62,8 +70,15 @@ impl FrameWindow {
             view,
             root,
             hud: RefCell::new(hud),
+            pad: std::cell::Cell::new(0),
+            pad_sym: std::cell::Cell::new(false),
+            pos: std::cell::Cell::new((0, 0)),
         };
         fw.setup_backend(&state);
+
+        // 每次绘制后同步 surface 输入区域 + 边距
+        // （layer-shell 的输入区域必须显式设置，否则收不到指针事件）
+        fw.set_size_hook_sync();
         fw
     }
 
@@ -88,6 +103,7 @@ impl FrameWindow {
                 if let Some(m) = monitor.as_ref() {
                     self.window.set_monitor(Some(m));
                 }
+                self.pos.set((x, y));
                 self.window.set_margin(Edge::Left, x);
                 self.window.set_margin(Edge::Top, y);
             }
@@ -98,9 +114,71 @@ impl FrameWindow {
         }
     }
 
+    /// 注册"每次绘制后"的同步钩子
+    fn set_size_hook_sync(&self) {
+        let weak: glib::WeakRef<gtk::Window> = glib::WeakRef::new();
+        weak.set(Some(&self.window));
+        // 上面的闭包只借用 window；last_region 用 WeakRef 之外的办法拿不到，
+        // 所以改成只读日志（不依赖 self）
+        self.view.set_size_hook(move || {
+            let Some(w) = weak.upgrade() else { return };
+            if let Some(n) = w.native() {
+                if let Some(surface) = n.surface() {
+                    let rect = cairo::RectangleInt::new(0, 0, n.width().max(1), n.height().max(1));
+                    surface.set_input_region(Some(&cairo::Region::create_rectangle(&rect)));
+                    crate::debug!("输入区域 → {}x{}", rect.width(), rect.height());
+                }
+            }
+        });
+    }
+
+    /// 拖动期间给 surface 加余量，让指针能拖到组件外面。
+    /// 内容位置与视觉完全不变，只是 surface 变大（透明区域不绘制）。
+    /// `symmetric=true`：四边都加余量（surface 需要负边距向左上扩张），
+    ///                 用于"移动"——内容用绘制偏移跟随指针，widget 几何不动，
+    ///                 因此 GTK 的 drag-delta 始终等于真实屏幕位移。
+    /// `symmetric=false`：只在右/下加余量（不需要负边距），
+    ///                 用于"改大小"——内容真实变大，widget 原点固定，delta 同样准确。
+    pub fn set_drag_padding_full(&self, px: i32, symmetric: bool) {
+        let px = px.max(0);
+        if self.pad.get() == px && self.pad_sym.get() == symmetric {
+            return;
+        }
+        self.pad.set(px);
+        self.pad_sym.set(symmetric);
+        if symmetric {
+            self.view.set_margin_start(px);
+            self.view.set_margin_top(px);
+            self.view.set_margin_end(px);
+            self.view.set_margin_bottom(px);
+        } else {
+            self.view.set_margin_start(0);
+            self.view.set_margin_top(0);
+            self.view.set_margin_end(px);
+            self.view.set_margin_bottom(px);
+        }
+        // 让 GTK 立刻重算窗口尺寸（layer surface 需要重新配置）
+        self.view.queue_resize();
+        self.apply_margins();
+        self.sync_input_region();
+        crate::debug!("拖动余量 → {px}px（对称={symmetric}）");
+    }
+
+    fn apply_margins(&self) {
+        if !self.window.is_layer_window() {
+            return;
+        }
+        let (x, y) = self.pos.get();
+        // 对称余量时需要负边距把 surface 向左上扩张（layer-shell 支持负值；
+        // 组件内容通过 view margin 保持在原位，视觉不跳）
+        let p = if self.pad_sym.get() { self.pad.get() } else { 0 };
+        self.window.set_margin(Edge::Left, x - p);
+        self.window.set_margin(Edge::Top, y - p);
+    }
+
     pub fn present(&self) {
         self.window.present();
-        // 自定义 widget + layer-shell 组合下，GTK 可能不会给 surface 设置输入区域，
+        // （保留注释）自定义 widget + layer-shell 组合下，GTK 可能不会给 surface 设置输入区域，
         // 导致收不到指针事件；这里显式把整个组件矩形设为可输入。
         let weak = glib::WeakRef::<gtk::Window>::new();
         weak.set(Some(&self.window));
@@ -122,9 +200,9 @@ impl FrameWindow {
     }
 
     pub fn set_position(&self, x: i32, y: i32) {
+        self.pos.set((x, y));
         if self.window.is_layer_window() {
-            self.window.set_margin(Edge::Left, x);
-            self.window.set_margin(Edge::Top, y);
+            self.apply_margins();
         } else {
             // 降级模式：Wayland 下应用无法自行移动 toplevel，由合成器决定位置
             crate::debug!("降级模式忽略位置 ({}, {})", x, y);
@@ -136,12 +214,14 @@ impl FrameWindow {
         self.sync_input_region();
     }
 
-    /// 尺寸变化后同步 surface 输入区域（layer-shell 必需，否则鼠标事件收不到）
+    /// 同步 surface 输入区域（layer-shell 必需）。
+    /// 用**窗口实际尺寸**（含拖动余量）而不是组件尺寸，否则余量区收不到事件。
     pub fn sync_input_region(&self) {
         if let Some(native) = self.window.native() {
             if let Some(surface) = native.surface() {
-                let (w, h) = self.view.content_size();
-                let rect = cairo::RectangleInt::new(0, 0, w.max(1), h.max(1));
+                let w = native.width().max(1);
+                let h = native.height().max(1);
+                let rect = cairo::RectangleInt::new(0, 0, w, h);
                 let region = cairo::Region::create_rectangle(&rect);
                 surface.set_input_region(Some(&region));
             }

@@ -137,10 +137,10 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
    - ⚠️ 本机 GStreamer 只装了 base 插件（无 h264/vp8/theora/matroska 解码器），
      真实 mp4/webm 暂无法播放；已加**自检模式** `PHOTO_FRAME_SELFTEST_VIDEO=1`
      （videotestsrc，不需要任何解码器）验证整条管线
-7. ⏳ 轮换 + 随机 + 视频播完再切
-8. ⏳ 被窗口覆盖则暂停（Hyprland IPC 事件流）
-9. ⏳ 右下角 resize（保持比例、不可为 0、不超 max）
-10. ⏳ 拖动移动 + 位置/尺寸持久化
+7. ✅ 轮换 + 随机 + 图片定时 / 视频播完再切
+8. ✅ 被窗口覆盖则暂停（Hyprland IPC 事件流；实测覆盖时 CPU 0.0%，恢复后 ~2%）
+9. ✅ 右下角 resize（保持比例、不可为 0、不超 max、不超屏幕）
+10. ✅ 拖动移动 + 位置/尺寸持久化（重启精确恢复）
 11. ⏳ Adw 设置窗口
 12. ⏳ `~/.config/autostart` 自启 + 卸载脚本
 
@@ -161,3 +161,23 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
 | 点击后按钮消失 | 切图导致尺寸变化，`Controls::reset()` 把透明度清零 | 改为 `on_resize()`：hover 中保持不透明 |
 | 程序偶发崩溃 | `Object::set_property` 属性不存在/类型不符会 **panic→abort** | 全部改用 `set_prop_safe`（先查属性+类型，只告警），并在 GStreamer 回调里 `catch_unwind` 隔离 |
 | 视频跑满一个核 | 自检 bin 用的是 `Bin`（无 clock），`sync` 不节流 | 自检改用 `Pipeline`；实测 29.5fps / CPU 3% |
+
+
+## 8. 拖动/resize 的实现要点（踩坑总结）
+
+GTK 的 `GestureDrag` delta 是**相对拖动起点、在 widget 坐标系里**的量。由此得到两条硬约束：
+
+1. **拖动过程中不能让 widget 或 surface 真的移动**（改边距 / 改内容位置都会污染 delta，
+   表现为正负跳变、位移翻倍或直接丢事件）。
+2. 因此"移动"用**绘制偏移**实现：`MediaView::set_visual_offset(dx,dy)` 只平移 snapshot，
+   widget 几何不动；松手时才真正写 `window.x/y` 并重建 surface。
+
+为了让指针能拖到组件外面，Begin 时把 layer surface 扩大（"余量"）：
+
+- **移动**：四边对称余量（需要**负 layer-shell 边距**向左上扩张 surface，本机 Hyprland 支持，
+  实测 surface 出现在 -200,-178）；内容靠绘制偏移保持在原位。
+- **改大小**：只在右/下加余量（不需要负边距），内容真实变大，widget 原点固定 → delta 准确。
+
+其它：resize 结束时重新贴一次位置（surface 重建后边距可能丢失），
+`GTK drag-delta` 是绝对位移（不是增量），**不能累加**；位置在 Begin 时快照，
+否则每次 Update 重读配置会翻倍。

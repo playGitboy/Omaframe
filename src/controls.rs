@@ -19,6 +19,23 @@ pub enum HitZone {
 }
 
 /// 控件几何：以组件逻辑像素为单位
+/// 拖拽模式：移动组件 / 右下角改大小
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragMode {
+    Move,
+    Resize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DragPhase {
+    /// 按下（模式 + 起点坐标）
+    Begin(DragMode, f64, f64),
+    /// 拖动中（相对按下点的位移）
+    Update(f64, f64),
+    /// 松开
+    End,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ControlLayout {
     pub w: f64,

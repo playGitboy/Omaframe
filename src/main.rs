@@ -5,6 +5,7 @@ mod config;
 mod controls;
 mod frame;
 mod geometry;
+mod hypr;
 mod log;
 mod media;
 mod player;
