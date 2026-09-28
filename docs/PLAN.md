@@ -1,3 +1,5 @@
+> 📌 **后期回顾先看 [`KEY-FINDINGS.md`](KEY-FINDINGS.md)**：已验证有效的修复点、症状→根因对照、语义约定与环境事实。
+
 # photo-frame — Omarchy 桌面电子相框 (V1)
 
 ## 0. 本机实测环境（Step 1 结论，勿凭旧资料假设）

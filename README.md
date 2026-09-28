@@ -159,4 +159,6 @@ src/
 * **稳定性**：GObject 属性设置全部走安全封装（属性缺失只告警不 abort），
   GStreamer/ffmpeg 回调与拖动处理都有 panic 隔离。
 
-详细踩坑记录与踩过的坑见 [`docs/PLAN.md`](docs/PLAN.md)。
+深入踩坑记录见 [`docs/PLAN.md`](docs/PLAN.md)；
+**后期快速回顾的结论速查**（已验证有效的修复点 / 症状→根因对照表 / 环境事实）见
+[`docs/KEY-FINDINGS.md`](docs/KEY-FINDINGS.md)。
