@@ -379,19 +379,27 @@ impl MediaPlayer {
             crate::debug!("无视频后端，跳过 {}", item.file_name());
             return;
         };
-        let (max_w, max_h, autoplay, media_scale) = {
+        let (max_w, max_h, autoplay, media_scale, connector) = {
             let cfg = self.state.config.borrow();
             (
                 cfg.display.max_width,
                 cfg.display.max_height,
                 cfg.video.autoplay,
                 cfg.display.media_scale,
+                cfg.window.monitor.clone(),
             )
         };
-        // 视频帧也按 96% 渲染（与图片一致），绘制时再居中
+        // 视频必须按**设备像素**解码：显示器有缩放（如 1.25x / HiDPI），
+        // 只按逻辑像素出帧会被合成器再放大 → 模糊。
+        // 这里与图片路径（decode_box）保持一致：逻辑尺寸 × media_scale × 屏幕缩放。
+        let screen_scale = crate::window::target_monitor(&connector)
+            .as_ref()
+            .map(monitor_scale)
+            .unwrap_or(1.0);
+        let k = media_scale * screen_scale;
         player.set_box(
-            (max_w as f64 * media_scale).round() as i32,
-            (max_h as f64 * media_scale).round() as i32,
+            (max_w as f64 * k).round() as i32,
+            (max_h as f64 * k).round() as i32,
         );
         // 关键：**不要**在这里清空纹理或改尺寸。
         // 视频首帧要等 ffprobe + ffmpeg 启动（约 0.2~0.5s），期间如果先把纹理清掉，

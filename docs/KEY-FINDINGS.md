@@ -49,6 +49,14 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 | 改边距/位置后重启丢失 | `apply_anchor` 只 `edit()` 没 `commit()` | 末尾补 `commit()` |
 | 调试浮层开关无效 | 运行时没真增删 HUD | `set_debug()` 运行时创建/移除标签 |
 
+## 三点五、视频清晰度（易回退的一个坑）
+
+- **症状**：视频在相框里发糊（图片清晰）。
+- **根因**：ffmpeg 管线只按**逻辑像素**出帧（`max × media_scale`，如 358×200），
+  而显示器有缩放（本机 1.25×，GDK `scale_factor()` 报 2）→ 合成器把帧再放大 → 模糊。
+- **修法**：`show_video` 的目标框 = `max × media_scale × monitor_scale`（与图片 `decode_box` 一致），
+  实测 358×200 → **713×401**；缩放器从默认/bilinear 换成 **lanczos**（小窗缩小画质差别明显）。
+
 ## 四、语义与配置约定
 
 - `display.max_width/max_height` = **上限**（媒体尺寸 = `fit(比例, max×media_scale)`），不是相框大小。

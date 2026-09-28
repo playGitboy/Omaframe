@@ -198,9 +198,10 @@ impl VideoPlayer {
         let fps = self.fps.get();
         // 探测不到比例时用"等比缩放 + 补边"，保证不变形（可能有黑边）
         let vf = match probed {
-            Some(_) => format!("scale={nw}:{nh}:flags=bilinear,fps={fps}"),
+            // lanczos：缩小画质明显更好（视频是小窗高频缩放）
+            Some(_) => format!("scale={nw}:{nh}:flags=lanczos,fps={fps}"),
             None => format!(
-                "scale={bw}:{bh}:force_original_aspect_ratio=decrease:flags=bilinear,\
+                "scale={bw}:{bh}:force_original_aspect_ratio=decrease:flags=lanczos,\
                  pad={bw}:{bh}:(ow-iw)/2:(oh-ih)/2,fps={fps}"
             ),
         };
