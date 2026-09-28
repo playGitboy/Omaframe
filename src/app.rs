@@ -4,7 +4,9 @@ use crate::config::{Config, ConfigManager, APP_ID};
 use crate::geometry;
 use crate::window::frame_window::FrameWindow;
 use crate::window::{detect_backend, monitor_bounds, target_monitor, Backend};
+use adw::prelude::*;
 use gdk::prelude::*;
+use gtk::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -16,6 +18,8 @@ pub struct AppState {
     pub player: RefCell<Option<Rc<crate::player::MediaPlayer>>>,
     /// Hyprland 覆盖检测（不可用时为 None）
     pub visibility: RefCell<Option<Rc<crate::hypr::VisibilityMonitor>>>,
+    /// 设置窗口
+    pub settings_window: RefCell<Option<adw::ApplicationWindow>>,
     /// 配置是否刚刚被程序修改过（退出时需要再存一次）
     pub dirty: std::cell::Cell<bool>,
 }
@@ -99,6 +103,7 @@ impl AppState {
             window: RefCell::new(None),
             player: RefCell::new(None),
             visibility: RefCell::new(None),
+            settings_window: RefCell::new(None),
             dirty: std::cell::Cell::new(needs_save),
         });
 
@@ -155,7 +160,8 @@ photo-frame — Omarchy 桌面电子相框
 
 用法：
   photo-frame            启动桌面相框
-  photo-frame settings   打开设置窗口
+  photo-frame settings   打开设置窗口（已有实例则通知它打开）
+  photo-frame quit       退出运行中的实例
   photo-frame --help     显示帮助
   photo-frame --version  显示版本
 
@@ -185,14 +191,18 @@ pub fn run(args: &[String]) -> Result<u8, String> {
     crate::log::init(&crate::config::state_dir(), crate::log::Level::parse(&level));
     crate::info!("photo-frame {} 启动中…", env!("CARGO_PKG_VERSION"));
 
-    let open_settings = args.first().map(|s| s == "settings").unwrap_or(false);
-    if open_settings {
-        crate::info!("设置窗口将在 Step 11 提供；本次仅启动相框");
+    // 已有实例在跑 → 通知它开设置窗口，然后本进程退出
+    let want_settings = args.iter().any(|a| a == "settings" || a == "--settings");
+    if want_settings && crate::settings::request_open() {
+        crate::info!("已通知运行中的实例打开设置窗口");
+        return Ok(0);
     }
+    let quit_only = args.iter().any(|a| a == "quit");
 
     adw::init().map_err(|e| format!("GTK 初始化失败：{e}"))?;
 
     let state = AppState::boot();
+    crate::settings::serve_control(state.clone());
 
     let app = adw::Application::builder()
         .application_id(APP_ID)
@@ -201,6 +211,15 @@ pub fn run(args: &[String]) -> Result<u8, String> {
 
     let app_state = state.clone();
     app.connect_activate(move |app| {
+        if want_settings && app_state.settings_window.borrow().is_none() {
+            let w = crate::settings::build(&app_state);
+            w.set_application(Some(app));
+            w.present();
+            *app_state.settings_window.borrow_mut() = Some(w);
+        }
+        if quit_only {
+            return;
+        }
         if app_state.window.borrow().is_none() {
             let fw = Rc::new(FrameWindow::new(app_state.clone(), app));
             fw.present();

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=桌面相框 (Photo Frame)
+Comment=在桌面上显示本地图片/视频相框
+Exec=photo-frame
+Icon=preferences-desktop-display
+Terminal=false
+X-GNOME-Autostart-enabled=true
+# Wayland 会话里才启动；不支持 layer-shell 的会话也安全降级
+X-Omarchy-Only=true

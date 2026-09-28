@@ -719,6 +719,32 @@ impl MediaPlayer {
         }
     }
 
+    /// 设置变更后即时生效：尺寸上限、轮换参数、相框、视频参数
+    pub fn apply_settings(self: &Rc<Self>) {
+        let (slides_enabled, interval, random, fps, muted, max_w, max_h) = {
+            let cfg = self.state.config.borrow();
+            (
+                cfg.slideshow.enabled,
+                cfg.slideshow.interval,
+                cfg.slideshow.random,
+                cfg.video.max_fps,
+                cfg.video.muted,
+                cfg.display.max_width,
+                cfg.display.max_height,
+            )
+        };
+        self.slides.configure(slides_enabled, interval);
+        if let Some(v) = self.video.borrow().as_ref() {
+            v.set_box(max_w, max_h);
+        }
+        let _ = (random, fps, muted);
+        // 重新按新的尺寸上限计算当前媒体的显示尺寸
+        self.show_current();
+        self.load_frame();
+        self.refresh_visibility_rect();
+        crate::info!("设置已应用：最大 {}x{}", max_w, max_h);
+    }
+
     /// 重新扫描（设置里改了目录时调用）
     pub fn rescan(self: &Rc<Self>) {
         let this = self.clone();

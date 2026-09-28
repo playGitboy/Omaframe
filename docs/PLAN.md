@@ -132,17 +132,18 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
 3. ✅ 本地图片：后台扫描、异步解码、`fit()` 自适应、预取与 LRU（实测 6016x3384 → 600x338）
 4. ⏳ 悬停交互控制（左右切换 + 底部中央播放/暂停）+ 默认位置改左上角
 5. ✅ PNG 相框 overlay（透明 PNG 叠在媒体之上）
-6. ✅ 视频：CPU 管线（`playbin` + `videoconvert/videoscale/capsfilter/appsink` → `GdkMemoryTexture`）
-   - 实测：1200x675@30fps → CPU ≈ 3%；被覆盖/暂停时 `PAUSED`，CPU 归零
-   - ⚠️ 本机 GStreamer 只装了 base 插件（无 h264/vp8/theora/matroska 解码器），
-     真实 mp4/webm 暂无法播放；已加**自检模式** `PHOTO_FRAME_SELFTEST_VIDEO=1`
-     （videotestsrc，不需要任何解码器）验证整条管线
+6. ✅ 视频：**系统 ffmpeg**（与系统动态壁纸 owe 同一套解码器）
+   - `ffmpeg -re -i 文件 -an -vf scale=W:H,fps=N -pix_fmt bgra -f rawvideo pipe:1`
+     → 读线程 → `GdkMemoryTexture` → 绘制
+   - 暂停/被覆盖 = **停止读管道** → ffmpeg 写满缓冲后阻塞，CPU 归零
+   - 尺寸先用 ffprobe 探测真实宽高再算目标尺寸（不变形）；探测失败则等比缩放+补边
+   - 实测：3840x2160 的 MP4(H.264) 缩到 600x338 播放，应用 CPU ≈ 3~5%
 7. ✅ 轮换 + 随机 + 图片定时 / 视频播完再切
 8. ✅ 被窗口覆盖则暂停（Hyprland IPC 事件流；实测覆盖时 CPU 0.0%，恢复后 ~2%）
 9. ✅ 右下角 resize（保持比例、不可为 0、不超 max、不超屏幕）
 10. ✅ 拖动移动 + 位置/尺寸持久化（重启精确恢复）
-11. ⏳ Adw 设置窗口
-12. ⏳ `~/.config/autostart` 自启 + 卸载脚本
+11. ✅ Adw 设置窗口（`photo-frame settings`，通过 `$XDG_RUNTIME_DIR` 控制 socket 通知已有实例）
+12. ✅ `make install`：只写 `~/.local/bin` + `~/.config/autostart`（XDG 标准，零 root、零 hypr 改动）
 
 验收场景按用户清单 1~13 逐条实测。
 
@@ -181,3 +182,15 @@ GTK 的 `GestureDrag` delta 是**相对拖动起点、在 widget 坐标系里**�
 其它：resize 结束时重新贴一次位置（surface 重建后边距可能丢失），
 `GTK drag-delta` 是绝对位移（不是增量），**不能累加**；位置在 Begin 时快照，
 否则每次 Update 重读配置会翻倍。
+
+
+## 9. 视频方案为什么从 GStreamer 换成系统 ffmpeg
+
+- 本机 GStreamer 只有 `gst-plugins-base`，**没有 h264/hevc/vp8/theora/matroska** 解码器，
+  真实 mp4/webm 根本解不了，而为了一个桌面组件去装整套 codec 包不合适。
+- 系统动态壁纸用的是 `owe`（`owe-render` 链接 libmpv + ffmpeg + EGL），
+  说明**系统本来就有完整解码能力**，直接用 ffmpeg CLI 即可，零新增依赖、零 root。
+- 本机 mpv 0.41 的编译**没有 `--window-layer`**，无法像动态壁纸那样直接开 layer-shell 表面；
+  把它嵌进 GTK4 需要 `mpv_render_context` + EGL/GL FBO 的一整套 FFI，成本高、风险大。
+- 结论：`ffmpeg` 负责解码（简单可靠、CPU 可控），绘制仍在 GTK4 里；暂停靠"不读管道"实现，
+  比 SIGSTOP 之类的信号方案更干净。

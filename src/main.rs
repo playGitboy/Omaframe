@@ -9,6 +9,7 @@ mod hypr;
 mod log;
 mod media;
 mod player;
+mod settings;
 mod slideshow;
 mod window;
 
