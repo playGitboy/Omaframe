@@ -97,7 +97,7 @@ impl MediaPlayer {
             drag: RefCell::new(DragState::default()),
         });
 
-        // 视频播放器（GStreamer 不可用则降级为纯图片）
+        // 视频播放器（系统 ffmpeg 不可用则降级为纯图片）
         {
             let (max_w, max_h, fps, muted) = {
                 let cfg = player.state.config.borrow();
@@ -356,24 +356,8 @@ impl MediaPlayer {
         self.refresh_frame();
     }
 
-    /// 视频自检：不需要解码器即可验证管线
-    pub fn selftest_video(self: &Rc<Self>) {
-        let Some(v) = self.video.borrow().clone() else {
-            crate::error!("自检失败：视频后端不可用");
-            return;
-        };
-        self.current_is_video.set(true);
-        v.load_test_source();
-    }
-
     /// 启动：后台扫描 → 显示第一项 → 开始轮换
     pub fn start(self: &Rc<Self>) {
-        // 自检模式：跳过媒体目录，直接用测试视频源（不需要任何解码器）
-        if std::env::var_os("PHOTO_FRAME_SELFTEST_VIDEO").is_some() {
-            self.selftest_video();
-            return;
-        }
-
         let this = self.clone();
         self.lib.on_scanned(Box::new(move || {
             this.after_scan();
@@ -472,20 +456,14 @@ impl MediaPlayer {
         }
     }
 
-    /// 视频帧（主线程）：只在尺寸变化时调整组件大小
+    /// 视频帧（主线程）：只在尺寸变化时调整组件大小。
+    /// 注意：ffmpeg 后端已经按**逻辑像素**缩放过（目标尺寸来自 max_width/max_height），
+    /// 所以这里不要再除以屏幕缩放。
     fn on_video_frame(self: &Rc<Self>, tex: gdk::Texture, w: i32, h: i32) {
         let Some(window) = self.state.window() else {
             return;
         };
-        let connector = self.state.config.borrow().window.monitor.clone();
-        let scale = crate::window::target_monitor(&connector)
-            .as_ref()
-            .map(monitor_scale)
-            .unwrap_or(1.0);
-        let logical = (
-            ((w as f64 / scale).round() as i32).max(1),
-            ((h as f64 / scale).round() as i32).max(1),
-        );
+        let logical = (w.max(1), h.max(1));
         let cur = window.view.content_size();
         if cur != logical {
             window.view.set_content_size(logical.0, logical.1);
