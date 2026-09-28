@@ -238,7 +238,7 @@ pub fn paint(cr: &cairo::Context, layout: &ControlLayout, controls: &Controls) {
     cr.set_line_width(1.6);
     cr.move_to(cx - s * 0.9, cy + s * 0.9);
     cr.line_to(cx + s * 0.9, cy - s * 0.9);
-    cr.stroke();
+    let _ = cr.stroke();
 }
 
 #[derive(Clone, Copy, PartialEq)]

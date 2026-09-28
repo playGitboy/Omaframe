@@ -9,7 +9,7 @@ use crate::media::library::MediaLibrary;
 use crate::media::{create_source, MediaItem, MediaKind};
 use crate::slideshow::Slideshow;
 use crate::window::monitor_scale;
-use gtk::prelude::*;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct MediaPlayer {
@@ -17,6 +17,8 @@ pub struct MediaPlayer {
     lib: Rc<MediaLibrary>,
     images: Rc<ImageService>,
     slides: Rc<Slideshow>,
+    /// PNG 相框（配置启用时）
+    frame: RefCell<Option<Rc<crate::frame::FrameRenderer>>>,
 }
 
 impl MediaPlayer {
@@ -58,7 +60,11 @@ impl MediaPlayer {
             lib,
             images,
             slides,
+            frame: RefCell::new(None),
         });
+
+        // PNG 相框
+        player.load_frame();
 
         // 控制层点击 → 播放/切换
         if let Some(window) = player.state.window() {
@@ -180,6 +186,50 @@ impl MediaPlayer {
         self.prefetch();
     }
 
+    /// 读取配置的相框 PNG（失败只告警，不影响图片显示）
+    pub fn load_frame(&self) {
+        let (enabled, path, connector) = {
+            let cfg = self.state.config.borrow();
+            (cfg.frame.enabled, cfg.frame.path.clone(), cfg.window.monitor.clone())
+        };
+        let mut slot = self.frame.borrow_mut();
+        *slot = None;
+        if !enabled || path.trim().is_empty() {
+            if let Some(w) = self.state.window() {
+                w.view.set_frame_texture(None);
+            }
+            return;
+        }
+        let scale = crate::window::target_monitor(&connector)
+            .as_ref()
+            .map(crate::window::monitor_scale)
+            .unwrap_or(1.0);
+        match crate::frame::FrameRenderer::new(std::path::Path::new(&path), scale) {
+            Some(r) => {
+                *slot = Some(Rc::new(r));
+                drop(slot);
+                self.refresh_frame();
+            }
+            None => {
+                crate::warn!("相框加载失败：{path}");
+                if let Some(w) = self.state.window() {
+                    w.view.set_frame_texture(None);
+                }
+            }
+        }
+    }
+
+    /// 组件尺寸变化后重新生成相框纹理
+    pub fn refresh_frame(&self) {
+        let renderer = self.frame.borrow().clone();
+        if let Some(r) = renderer {
+            if let Some(w) = self.state.window() {
+                let (cw, ch) = w.view.content_size();
+                w.view.set_frame_texture(r.texture_for(cw, ch));
+            }
+        }
+    }
+
     fn apply_image(&self, tex: gdk::Texture, size: (i32, i32), caption: &str) {
         let Some(window) = self.state.window() else {
             return;
@@ -195,6 +245,8 @@ impl MediaPlayer {
             ((size.1 as f64 / scale).round() as i32).max(1),
         );
         window.view.set_image(Some(tex), logical, caption);
+        // 相框跟随组件尺寸
+        self.refresh_frame();
 
         // 尺寸变了才落盘
         let changed = {

@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod controls;
+mod frame;
 mod geometry;
 mod log;
 mod media;
