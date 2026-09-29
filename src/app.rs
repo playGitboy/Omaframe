@@ -235,6 +235,7 @@ pub fn run(args: &[String]) -> Result<u8, String> {
 
             if let Some(player) = crate::player::MediaPlayer::new(app_state.clone()) {
                 player.start();
+                player.apply_desktop_visible();
                 *app_state.player.borrow_mut() = Some(player.clone());
 
                 // 「被窗口覆盖则暂停」：Hyprland IPC 事件驱动

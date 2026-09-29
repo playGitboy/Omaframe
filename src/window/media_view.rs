@@ -19,8 +19,8 @@ use crate::controls::{ControlLayout, Controls, HitZone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
-/// 相框比素材放大的倍数
-const FRAME_GROWTH: f64 = 1.03;
+/// 遮罩裁剪时向外多放一点像素：让裁剪硬边落在相框不透明环内 → 无锯齿
+const MASK_FEATHER: f64 = 1.5;
 
 type ClickHandler = Rc<dyn Fn(HitZone)>;
 type DragHandler = Rc<dyn Fn(crate::controls::DragPhase)>;
@@ -39,7 +39,7 @@ mod imp {
         /// 相框左上角的屏幕坐标（配置 window.x / window.y）
         pub frame_x: Cell<i32>,
         pub frame_y: Cell<i32>,
-        /// 媒体内缩比例（0.96 = 留 4% 给相框）
+        /// 媒体内缩比例（已废弃：改用 PNG 内孔遮罩让位，此处恒为 1.0，仅为兼容旧配置）
         pub media_scale: Cell<f64>,
         pub texture: RefCell<Option<gdk::Texture>>,
         pub frame: RefCell<Option<gdk::Texture>>,
@@ -54,6 +54,10 @@ mod imp {
         pub offset_y: Cell<f64>,
         /// 最近一次绘制的相框矩形（含偏移）：命中检测与输入区域用它
         pub hit_rect: Cell<(f64, f64, f64, f64)>,
+        /// 相框内孔（透明区）比例（None = 无内孔，退回叠图）
+        pub inner_hole: Cell<Option<crate::frame::InnerHole>>,
+        /// 内孔遮罩（cairo surface：alpha=255 处允许显示媒体），把媒体擦成内孔形状
+        pub frame_mask: RefCell<Option<Rc<cairo::ImageSurface>>>,
         pub press_x: Cell<f64>,
         pub press_y: Cell<f64>,
         pub press_valid: Cell<bool>,
@@ -100,15 +104,80 @@ mod imp {
             let media_rect = gtk::graphene::Rect::new(mx as f32, my as f32, mw as f32, mh as f32);
             let frame_rect = gtk::graphene::Rect::new(fx as f32, fy as f32, fw as f32, fh as f32);
 
+            // 媒体绘制：若相框检测到内孔，裁剪到内孔（并外扩 MASK_FEATHER 藏边）
+            let hole = self.inner_hole.get();
+            snapshot.save();
+            if let Some(h) = hole {
+                let ix = (fx as f64 + fw as f64 * h.x0) as f32;
+                let iy = (fy as f64 + fh as f64 * h.y0) as f32;
+                let iw = (fw as f64 * h.width()) as f32;
+                let ih = (fh as f64 * h.height()) as f32;
+                let grow = MASK_FEATHER as f32;
+                let clip = gtk::graphene::Rect::new(
+                    ix - grow,
+                    iy - grow,
+                    iw + grow * 2.0,
+                    ih + grow * 2.0,
+                );
+                snapshot.push_clip(&clip);
+            }
             if let Some(tex) = self.texture.borrow().clone() {
                 if !self.logged.replace(true) {
                     crate::debug!("绘制纹理 {}x{}", tex.width(), tex.height());
                 }
-                snapshot.append_texture(&tex, &media_rect);
+                // 媒体按 **cover** 填满可视区：内孔比例与媒体比例不同时，
+                // 轻微裁切而不是留边（照片满了更好看）
+                let (mw_, mh_) = (media_rect.width(), media_rect.height());
+                let (tw_, th_) = (tex.width() as f32, tex.height() as f32);
+                let src_aspect = tw_ / th_;
+                let dst_aspect = mw_ / mh_;
+                let draw = if src_aspect > dst_aspect {
+                    // 源更宽：按高度铺满，左右超出被裁
+                    let h2 = mh_;
+                    let w2 = h2 * src_aspect;
+                    gtk::graphene::Rect::new(
+                        media_rect.x() - (w2 - mw_) / 2.0,
+                        media_rect.y(),
+                        w2,
+                        h2,
+                    )
+                } else {
+                    let w2 = mw_;
+                    let h2 = w2 / src_aspect;
+                    gtk::graphene::Rect::new(
+                        media_rect.x(),
+                        media_rect.y() - (h2 - mh_) / 2.0,
+                        w2,
+                        h2,
+                    )
+                };
+                snapshot.append_texture(&tex, &draw);
+            }
+            if hole.is_some() {
+                snapshot.pop();
+            }
+            snapshot.restore();
+
+            // 用遮罩把媒体**擦成内孔形状**：外部透明缺口（异形轮廓）与相框不透明处都不显示媒体。
+            // 遮罩边缘做过 1px 羽化 → 与相框自然衔接（半透明渐变观感）。
+            let mask_guard = self.frame_mask.borrow();
+            if let Some(mask) = mask_guard.as_deref() {
+                let cr = snapshot.append_cairo(&frame_rect);
+                let _ = cr.save();
+                cr.set_operator(cairo::Operator::DestOut);
+                let _ = cr.set_source_surface(mask, 0.0, 0.0);
+                cr.rectangle(
+                    0.0,
+                    0.0,
+                    frame_rect.width() as f64,
+                    frame_rect.height() as f64,
+                );
+                let _ = cr.fill();
+                let _ = cr.restore();
             }
             // 没有媒体时不画任何底色：layer surface 一旦被当成不透明就会变黑块
 
-            // PNG 相框：比素材大 3%，居中
+            // PNG 相框叠在最上层：它的透明区正好透出被裁剪的媒体
             if let Some(frame) = self.frame.borrow().as_ref() {
                 snapshot.append_texture(frame, &frame_rect);
             }
@@ -140,36 +209,25 @@ impl imp::MediaView {
     /// (相框 x,y,w,h, 媒体 x,y,w,h)，单位 px，控件（=屏幕）坐标
     #[allow(clippy::type_complexity)]
     pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
-        let scale = {
-            let s = self.media_scale.get();
-            if s.is_finite() {
-                s.clamp(0.2, 1.0)
-            } else {
-                1.0
-            }
-        };
         let (bw, bh) = (self.box_w.get().max(16), self.box_h.get().max(16));
 
-        // 媒体尺寸：预览优先，否则按素材比例在上限内取最大
-        let (mw, mh) = if self.preview_w.get() > 0 {
+        // 媒体尺寸：预览优先，否则按素材比例在上限内取最大。
+        // 已撤销"按百分比内缩"：上限就是最终大小（由 PNG 内孔遮罩负责让位）。
+        let (bw, bh) = if self.preview_w.get() > 0 {
             (self.preview_w.get().max(1), self.preview_h.get().max(1))
-        } else if let Some(tex) = self.texture.borrow().as_ref() {
-            crate::geometry::fit(
-                tex.width().max(1),
-                tex.height().max(1),
-                (bw as f64 * scale).round() as i32,
-                (bh as f64 * scale).round() as i32,
-            )
         } else {
-            (
-                (bw as f64 * scale).round() as i32,
-                (bh as f64 * scale).round() as i32,
-            )
+            (bw, bh)
+        };
+        let (mw, mh) = if let Some(tex) = self.texture.borrow().as_ref() {
+            crate::geometry::fit(tex.width().max(1), tex.height().max(1), bw, bh)
+        } else {
+            (bw, bh)
         };
 
-        // 相框 = 媒体 × 1.03，左上角就是配置位置
-        let fw = ((mw as f64 * FRAME_GROWTH).round() as i32).max(1);
-        let fh = ((mh as f64 * FRAME_GROWTH).round() as i32).max(1);
+        // 相框矩形 == 媒体矩形（已撤销"按百分比放大"：
+        // 改由遮罩把媒体裁进 PNG 内孔，不再靠缩放让位）
+        let fw = mw;
+        let fh = mh;
         let fx = self.frame_x.get();
         let fy = self.frame_y.get();
         let mx = fx + (fw - mw) / 2;
@@ -439,7 +497,19 @@ impl MediaView {
         self.queue_draw();
     }
 
-    pub fn set_frame_texture(&self, texture: Option<gdk::Texture>) {
+    /// 相框遮罩（cairo surface）
+    pub fn set_frame_mask(&self, mask: Option<Rc<cairo::ImageSurface>>) {
+        *self.imp().frame_mask.borrow_mut() = mask;
+        self.queue_draw();
+    }
+
+    /// PNG 相框（同时给出内孔遮罩；None 内孔 = 叠图模式）
+    pub fn set_frame_texture_with_hole(
+        &self,
+        texture: Option<gdk::Texture>,
+        hole: Option<crate::frame::InnerHole>,
+    ) {
+        self.imp().inner_hole.set(hole);
         *self.imp().frame.borrow_mut() = texture;
         self.queue_draw();
     }

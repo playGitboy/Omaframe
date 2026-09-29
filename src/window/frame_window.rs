@@ -186,6 +186,17 @@ impl FrameWindow {
         self.window.present();
     }
 
+    /// 桌面显示开关：隐藏时把 surface 撤下（媒体继续解码，设置与托盘不受影响）
+    pub fn set_desktop_visible(&self, visible: bool) {
+        if visible {
+            if !self.window.is_visible() {
+                self.window.present();
+            }
+        } else if self.window.is_visible() {
+            self.window.set_visible(false);
+        }
+    }
+
     /// 相框位置：直接改绘制坐标（不动 layer 边距 → 零 configure）
     pub fn set_position(&self, x: i32, y: i32) {
         self.view.set_frame_pos(x, y);
@@ -194,6 +205,11 @@ impl FrameWindow {
     /// 媒体上限（配置 max_width/max_height）
     pub fn set_box(&self, w: i32, h: i32) {
         self.view.set_box(w, h);
+    }
+
+    /// 设置相框遮罩纹理（内孔 = 允许显示媒体）
+    pub fn set_frame_mask(&self, mask: Option<std::rc::Rc<cairo::ImageSurface>>) {
+        self.view.set_frame_mask(mask);
     }
 
     pub fn sync_input_region(&self) {

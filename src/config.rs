@@ -123,6 +123,8 @@ pub struct VideoConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FrameConfig {
+    /// 是否在桌面显示相框（关闭后隐藏窗口，媒体与设置照常可用）
+    pub desktop_enabled: bool,
     pub enabled: bool,
     /// 透明 PNG 相框（保存时为绝对路径）
     pub path: String,
@@ -200,6 +202,7 @@ impl Default for FrameConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            desktop_enabled: true,
             path: String::new(),
         }
     }

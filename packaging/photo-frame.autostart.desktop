@@ -2,9 +2,13 @@
 Type=Application
 Name=桌面相框 (Photo Frame)
 Comment=在桌面上显示本地图片/视频相框
-Exec=photo-frame
+Exec=/home/sen/.local/bin/photo-frame
 Icon=preferences-desktop-display
 Terminal=false
-X-GNOME-Autostart-enabled=true
-# Wayland 会话里才启动；不支持 layer-shell 的会话也安全降级
-X-Omarchy-Only=true
+# 桌面起来后稍等再启动：不与 Hyprland/omarchy 首屏争资源
+X-GNOME-Autostart-Delay=4
+X-GNOME-Autostart-Enabled=true
+# 不弹通知、不阻塞会话启动
+X-GNOME-Autostart-NoNotification=true
+X-StartupNotify=false
+OnlyShowIn=Hyprland;

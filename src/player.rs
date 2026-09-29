@@ -525,7 +525,8 @@ impl MediaPlayer {
         *slot = None;
         if !enabled || path.trim().is_empty() {
             if let Some(w) = self.state.window() {
-                w.view.set_frame_texture(None);
+                w.view.set_frame_texture_with_hole(None, None);
+                w.set_frame_mask(None);
             }
             return;
         }
@@ -542,7 +543,8 @@ impl MediaPlayer {
             None => {
                 crate::warn!("相框加载失败：{path}");
                 if let Some(w) = self.state.window() {
-                    w.view.set_frame_texture(None);
+                    w.view.set_frame_texture_with_hole(None, None);
+                w.set_frame_mask(None);
                 }
             }
         }
@@ -575,7 +577,8 @@ impl MediaPlayer {
         if let Some(r) = renderer {
             if let Some(w) = self.state.window() {
                 let (fw, fh) = w.view.frame_size();
-                w.view.set_frame_texture(r.texture_for(fw, fh));
+                w.view.set_frame_texture_with_hole(r.texture_for(fw, fh), r.inner_hole());
+                w.set_frame_mask(r.mask_surface_for(fw, fh));
             }
         }
     }
@@ -699,6 +702,15 @@ impl MediaPlayer {
             w2.update_hud(&self.state, "");
         }
         crate::info!("位置已调整到 ({x},{y})（相框 {fw}x{fh}，停靠 {anchor}，边距 {margin}）");
+    }
+
+    /// 桌面显示开关（设置页切换时调用）
+    pub fn apply_desktop_visible(self: &Rc<Self>) {
+        let on = self.state.config.borrow().frame.desktop_enabled;
+        if let Some(w) = self.state.window() {
+            w.set_desktop_visible(on);
+        }
+        crate::debug!("桌面显示相框 = {on}");
     }
 
     /// 把配置里的媒体内缩比例同步给绘制控件

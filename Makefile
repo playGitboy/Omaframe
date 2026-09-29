@@ -4,7 +4,7 @@ AUTOSTART_DIR := $(HOME)/.config/autostart
 CONFIG_DIR := $(HOME)/.config/omarchy-photo-frame
 PKG := photo-frame
 
-.PHONY: all build test install uninstall run clean fmt
+.PHONY: all build test install uninstall run clean fmt versions rollback
 
 all: build
 
@@ -35,6 +35,13 @@ install: build
 uninstall:
 	rm -f $(BINDIR)/$(PKG) $(AUTOSTART_DIR)/$(PKG).desktop
 	@echo "已卸载（配置保留在 $(CONFIG_DIR)）"
+
+## 版本管理：一键回滚 / 切换
+versions:
+	@scripts/rollback.sh --list
+
+rollback:
+	@scripts/rollback.sh $(REF)
 
 clean:
 	cargo clean
