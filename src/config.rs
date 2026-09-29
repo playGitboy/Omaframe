@@ -126,7 +126,11 @@ pub struct FrameConfig {
     /// 是否在桌面显示相框（关闭后隐藏窗口，媒体与设置照常可用）
     pub desktop_enabled: bool,
     pub enabled: bool,
-    /// 透明 PNG 相框（保存时为绝对路径）
+    /// 相框样式：程序目录 `frame/` 下的 PNG 文件名（如 `木纹.png`）；空 = 不加相框
+    pub style: String,
+    /// 素材显示比（0-100，100 = 铺满相框内孔）
+    pub zoom: u8,
+    /// 旧字段（v1 早期）：PNG 绝对路径，仅用于自动迁移到 `style`
     pub path: String,
 }
 
@@ -203,9 +207,46 @@ impl Default for FrameConfig {
         Self {
             enabled: false,
             desktop_enabled: true,
+            style: String::new(),
+            zoom: 100,
             path: String::new(),
         }
     }
+}
+
+/// 内置相框库目录（程序目录下的 `frame/`）
+pub fn frame_dir() -> PathBuf {
+    // 可执行文件所在目录的 frame/（安装后为 ~/.local/bin/../frame 不成立，
+    // 因此优先用编译期源码目录，其次用可执行文件同级的 frame）
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(d) = exe_dir {
+        candidates.push(d.join("frame"));
+        candidates.push(d.join("../frame"));
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
+    for c in &candidates {
+        if c.is_dir() {
+            return c.clone();
+        }
+    }
+    candidates.remove(0)
+}
+
+/// 列出内置相框（返回文件名，按名称排序）
+pub fn list_frame_styles() -> Vec<String> {
+    let mut names: Vec<String> = match std::fs::read_dir(frame_dir()) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_ascii_lowercase().ends_with(".png"))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    names.sort_by_key(|n| n.to_lowercase());
+    names
 }
 
 impl Default for WindowConfig {
@@ -271,8 +312,25 @@ impl Config {
         }
         self.source.path = expand_user(&self.source.path).to_string_lossy().into_owned();
         if !self.frame.path.is_empty() {
-            self.frame.path = expand_user(&self.frame.path).to_string_lossy().into_owned();
+            let p = expand_user(&self.frame.path);
+            // 迁移：旧配置里的绝对路径 → 内置相框库里的文件名
+            if self.frame.style.is_empty() {
+                if let Some(name) = p.file_name() {
+                    let name = name.to_string_lossy().into_owned();
+                    if frame_dir().join(&name).is_file() {
+                        self.frame.style = name;
+                    }
+                }
+            }
         }
+        if !self.frame.style.is_empty() {
+            let name = std::path::Path::new(&self.frame.style)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.frame.style.clone());
+            self.frame.style = name;
+        }
+        self.frame.zoom = self.frame.zoom.min(100);
     }
 }
 
@@ -300,6 +358,8 @@ pub struct Loaded {
     pub config: Config,
     /// true = 首次运行（没有配置文件），用于决定是否落盘默认值
     pub fresh: bool,
+    /// true = 读取时做过迁移/夹取（如旧 path → 内置相框库 style），需要落盘
+    pub migrated: bool,
 }
 
 impl ConfigManager {
@@ -330,8 +390,14 @@ impl ConfigManager {
                 Config::default()
             }
         };
+        let before = config.clone();
         config.sanitize();
-        Loaded { config, fresh }
+        let migrated = !fresh && config != before;
+        Loaded {
+            config,
+            fresh,
+            migrated,
+        }
     }
 
     fn quarantine(&self) {

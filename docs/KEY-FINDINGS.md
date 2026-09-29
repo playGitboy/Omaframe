@@ -77,12 +77,25 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 - **修法**：`show_video` 的目标框 = `max × media_scale × monitor_scale`（与图片 `decode_box` 一致），
   实测 358×200 → **713×401**；缩放器从默认/bilinear 换成 **lanczos**（小窗缩小画质差别明显）。
 
+## 三点七、内置相框库 + 相框样式 + 显示比
+
+- 相框库在**程序目录 `frame/`**（原 `~/frame` 已移入，8 个中文名 PNG）。
+  `config::frame_dir()` 解析顺序：`<exe同级>/frame` → `<exe上级>/frame` → 源码目录 `frame/`；
+  `list_frame_styles()` 读取其中所有 `.png`（按名称排序）作为设置页下拉选项。
+- 配置：`frame.style = "木纹.png"`（**文件名**，不是绝对路径）；`frame.zoom = 0..100`（默认 100）。
+  旧的 `frame.path` 会在 `Config::sanitize()` 里**自动迁移**成 `style`
+  （`Loaded.migrated` 标记 → boot 立即落盘，不等退出）。
+- 显示比实现：`geometry::zoom_in_frame(fx,fy,fw,fh,zoom)` —— **以相框矩形中心为基准**缩放，
+  四周对称留边（单测断言 100%/70%/0% 三种情形下中心不变）。
+- 换样式/改显示比都是**立即生效**：`player.load_frame()` + `player.apply_zoom()`。
+
 ## 四、语义与配置约定
 
 - `display.max_width/max_height` = **上限**（媒体尺寸 = `fit(比例, max×media_scale)`），不是相框大小。
 - `window.x/y` = **相框左上角**的屏幕坐标（不是 layer 边距；layer 边距恒为 0）。
 - `display.media_scale`：**已废弃**（相框改遮罩后不再需要百分比内缩），仅为兼容旧配置保留。
 - `frame.desktop_enabled` = 默认 true；关掉后相框从桌面隐藏（媒体继续解码，设置/托盘不受影响）。
+- `frame.style` = 内置相框库里的 PNG 文件名；`frame.zoom` = 素材显示比（0-100，以相框中心缩放）。
 - 相框矩形 == 媒体矩形；`frame.enabled` 关闭时纯展示媒体。
 - 输入区域平时 = 相框矩形（**相框外点击穿透桌面**，不挡操作）；拖动中 = 整屏。
 - 拖拽判定阈值 2px（`gtk-dnd-drag-threshold`，默认 8px 太迟钝）。

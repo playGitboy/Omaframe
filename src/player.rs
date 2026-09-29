@@ -515,15 +515,49 @@ impl MediaPlayer {
         self.prefetch();
     }
 
-    /// 读取配置的相框 PNG（失败只告警，不影响图片显示）
+    /// 应用「素材显示比」（0-100，以相框中心为基准缩放）
+    pub fn apply_zoom(self: &Rc<Self>) {
+        let pct = self.state.config.borrow().frame.zoom.min(100);
+        if let Some(w) = self.state.window() {
+            w.view.set_media_zoom(pct as f64 / 100.0);
+        }
+        crate::debug!("素材显示比 = {pct}%");
+    }
+
     pub fn load_frame(&self) {
-        let (enabled, path, connector) = {
+        let (enabled, style, legacy, connector) = {
             let cfg = self.state.config.borrow();
-            (cfg.frame.enabled, cfg.frame.path.clone(), cfg.window.monitor.clone())
+            (
+                cfg.frame.enabled,
+                cfg.frame.style.trim().to_string(),
+                cfg.frame.path.trim().to_string(),
+                cfg.window.monitor.clone(),
+            )
         };
-        let mut slot = self.frame.borrow_mut();
-        *slot = None;
-        if !enabled || path.trim().is_empty() {
+        *self.frame.borrow_mut() = None;
+
+        // 优先用内置相框库（程序目录 frame/ 下的 PNG）
+        let mut path = String::new();
+        if enabled && !style.is_empty() {
+            let p = crate::config::frame_dir().join(&style);
+            if p.is_file() {
+                path = p.to_string_lossy().into_owned();
+            } else {
+                crate::warn!(
+                    "内置相框不存在：{}（目录 {}）",
+                    style,
+                    crate::config::frame_dir().display()
+                );
+            }
+        }
+        // 兼容旧配置的绝对路径
+        if path.is_empty() && enabled && !legacy.is_empty() {
+            let p = crate::config::expand_user(&legacy);
+            if p.is_file() {
+                path = p.to_string_lossy().into_owned();
+            }
+        }
+        if path.is_empty() {
             if let Some(w) = self.state.window() {
                 w.view.set_frame_texture_with_hole(None, None);
                 w.set_frame_mask(None);
@@ -536,15 +570,14 @@ impl MediaPlayer {
             .unwrap_or(1.0);
         match crate::frame::FrameRenderer::new(std::path::Path::new(&path), scale) {
             Some(r) => {
-                *slot = Some(Rc::new(r));
-                drop(slot);
+                *self.frame.borrow_mut() = Some(Rc::new(r));
                 self.refresh_frame();
             }
             None => {
                 crate::warn!("相框加载失败：{path}");
                 if let Some(w) = self.state.window() {
                     w.view.set_frame_texture_with_hole(None, None);
-                w.set_frame_mask(None);
+                    w.set_frame_mask(None);
                 }
             }
         }
@@ -715,6 +748,7 @@ impl MediaPlayer {
 
     /// 把配置里的媒体内缩比例同步给绘制控件
     pub fn apply_media_scale(self: &Rc<Self>) {
+        self.apply_zoom();
         let s = self.state.config.borrow().display.media_scale;
         if let Some(w) = self.state.window() {
             w.view.set_media_scale(s);

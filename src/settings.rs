@@ -276,43 +276,78 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         |c| c.frame.enabled,
         |c, v| c.frame.enabled = v,
     ));
-    let frame_row = adw::EntryRow::builder().title("PNG 路径").build();
-    frame_row.set_text(&state.config.borrow().frame.path);
-    let frame_btn = gtk::Button::builder()
-        .icon_name("document-open-symbolic")
-        .valign(gtk::Align::Center)
-        .build();
+    // 相框样式：读取程序目录 frame/ 下的所有 PNG
     {
+        let styles = crate::config::list_frame_styles();
+        let cur = state.config.borrow().frame.style.trim().to_string();
+        let labels: Vec<String> = if styles.is_empty() {
+            vec!["（未找到相框库）".to_string()]
+        } else {
+            styles
+                .iter()
+                .map(|n| n.trim_end_matches(".png").to_string())
+                .collect()
+        };
+        let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let combo = adw::ComboRow::builder()
+            .title("相框样式")
+            .subtitle({
+                if styles.is_empty() {
+                    "程序目录 frame/ 下没有 PNG".to_string()
+                } else {
+                    format!(
+                        "内置相框库 {} 个（{}）",
+                        styles.len(),
+                        crate::config::frame_dir().display()
+                    )
+                }
+            })
+            .model(&gtk::StringList::new(&label_refs))
+            .build();
+        if let Some(i) = styles.iter().position(|n| *n == cur) {
+            combo.set_selected(i as u32);
+        } else if !styles.is_empty() {
+            combo.set_selected(0);
+            // 配置里的样式已失效 → 落到第一个可用样式
+            let first = styles[0].clone();
+            state.update(|c| c.frame.style = first);
+        }
         let st = state.clone();
-        let row_in = frame_row.clone();
-        let ww = win_weak.clone();
-        frame_btn.connect_clicked(move |_| {
-            let dialog = gtk::FileDialog::builder()
-                .title("选择相框 PNG")
-                .build();
-            let st = st.clone();
-            let row2 = row_in.clone();
-            let parent = ww.upgrade();
-            dialog.open(
-                parent.as_ref(),
-                gio::Cancellable::NONE,
-                move |res| {
-                    if let Ok(f) = res {
-                        if let Some(p) = f.path() {
-                            let p = p.to_string_lossy().into_owned();
-                            st.update(|c| c.frame.path = p.clone());
-                            row2.set_text(&p);
-                            if let Some(pl) = st.player.borrow().as_ref() {
-                                pl.load_frame();
-                            }
-                        }
-                    }
-                },
-            );
+        let names = styles.clone();
+        combo.connect_selected_notify(move |row| {
+            let i = row.selected() as usize;
+            if let Some(name) = names.get(i) {
+                let name = name.clone();
+                st.update(|c| c.frame.style = name);
+                if let Some(p) = st.player.borrow().as_ref() {
+                    p.load_frame();
+                    p.apply_zoom();
+                }
+            }
         });
+        g_frame.add(&combo);
     }
-    frame_row.add_suffix(&frame_btn);
-    g_frame.add(&frame_row);
+
+    // 素材显示比：以相框中心为基准缩放照片/视频
+    {
+        let init = state.config.borrow().frame.zoom.min(100) as f64;
+        let adj = gtk::Adjustment::new(init, 0.0, 100.0, 1.0, 10.0, 0.0);
+        let row = adw::SpinRow::builder()
+            .title("显示比")
+            .subtitle("相对相框内孔的素材显示百分比（以相框中心缩放）")
+            .adjustment(&adj)
+            .build();
+        let st = state.clone();
+        adj.connect_value_changed(move |a| {
+            let v = a.value().round().clamp(0.0, 100.0) as u8;
+            st.update(|c| c.frame.zoom = v);
+            if let Some(p) = st.player.borrow().as_ref() {
+                p.apply_zoom();
+            }
+        });
+        g_frame.add(&row);
+    }
+
     page.add(&g_frame);
 
     // ---------------- 位置 ----------------
@@ -410,6 +445,19 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
     page.add(&g_pos);
 
     win.set_content(Some(&page));
+
+    // 关闭请求：隐藏窗口并清掉状态里的强引用。
+    // （我们把窗口存在 AppState 里，直接 gtk close 不会真正销毁它）
+    {
+        let st = state.clone();
+        let handle = win.clone(); // GObject 引用（廉价）
+        win.connect_close_request(move |_| {
+            crate::debug!("设置页关闭请求 → 隐藏并释放引用");
+            handle.set_visible(false);
+            *st.settings_window.borrow_mut() = None;
+            glib::Propagation::Stop
+        });
+    }
 
     // Esc 关闭设置页。
     // 用 **capture 阶段**的 EventControllerKey：按键会先送到窗口，再到焦点控件，

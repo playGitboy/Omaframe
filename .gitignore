@@ -1,2 +1,5 @@
 target
 *.tmp.*
+
+# 内置相框库体积较大，不进 git（用 scripts/ 备份）
+frame/

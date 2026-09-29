@@ -94,7 +94,21 @@ impl AppState {
         }
 
         config.sanitize();
+        // load() 内部已 sanitize 过；这里再兜一次（播放/窗口相关字段）
+        let migrated = loaded.migrated;
+        if migrated {
+            needs_save = true;
+        }
         let backend = detect_backend();
+
+        if migrated {
+            // 立即落盘（不等退出，避免被 kill 时丢失迁移结果）
+            if let Err(e) = manager.save(&config) {
+                crate::warn!("迁移后保存配置失败：{e}");
+            } else {
+                crate::info!("配置已自动迁移并保存（旧 path → 内置相框库）");
+            }
+        }
 
         let state = Rc::new(Self {
             manager,

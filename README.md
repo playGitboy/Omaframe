@@ -20,7 +20,8 @@ make install        # 只写用户目录，不需要 root，不修改 hypr/omarc
 | 位置 | 说明 |
 |---|---|
 | `~/.local/bin/photo-frame` | 主程序 |
-| `~/.config/autostart/photo-frame.desktop` | 登录自启（XDG 标准，Omarchy/uwsm 会自动拉起） |
+| `~/.config/autostart/photo-frame.desktop` | 登录自启（XDG 标准，延迟 4s，不拖慢桌面加载） |
+| `frame/*.png` | **内置相框库**（相框样式下拉的选项来源） |
 | `~/.config/omarchy-photo-frame/config.toml` | 配置（首次启动自动生成） |
 | `~/.local/state/omarchy-photo-frame/logs/photo-frame.log` | 日志（自动轮转 1MB） |
 
@@ -105,7 +106,8 @@ max_fps = 30
 
 [frame]
 enabled = true
-path = "~/.config/omarchy-photo-frame/frame.png"   # 透明 PNG，叠在媒体之上
+style = "木纹.png"          # 内置相框库 frame/ 下的 PNG 文件名
+zoom = 100                 # 素材显示比 0-100（以相框中心为基准缩放）
 # 相框 PNG 建议：900x760 左右，两层圆角框，**四角与中心都透明**；
 # 框宽（外沿到内孔）约 60/900 ≈ 6.7%，比媒体内缩 4% 略大，看起来才有"卡纸"感
 

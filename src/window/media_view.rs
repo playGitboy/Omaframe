@@ -43,6 +43,8 @@ mod imp {
         pub frame_y: Cell<i32>,
         /// 媒体内缩比例（已废弃：改用 PNG 内孔遮罩让位，此处恒为 1.0，仅为兼容旧配置）
         pub media_scale: Cell<f64>,
+        /// 素材显示比（0.0~1.0，1.0 = 铺满相框内孔），**以相框中心为基准缩放**
+        pub media_zoom: Cell<f64>,
         pub texture: RefCell<Option<gdk::Texture>>,
         pub frame: RefCell<Option<gdk::Texture>>,
         pub controls: Controls,
@@ -213,27 +215,20 @@ impl imp::MediaView {
     pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
         let (bw, bh) = (self.box_w.get().max(16), self.box_h.get().max(16));
 
-        // 媒体尺寸：预览优先，否则按素材比例在上限内取最大。
-        // 已撤销"按百分比内缩"：上限就是最终大小（由 PNG 内孔遮罩负责让位）。
-        let (bw, bh) = if self.preview_w.get() > 0 {
+        // 相框矩形 = 满盒 fit（预览优先）。已撤销"按百分比缩放让位"，改由遮罩负责。
+        let (fw, fh) = if self.preview_w.get() > 0 {
             (self.preview_w.get().max(1), self.preview_h.get().max(1))
+        } else if let Some(t) = self.texture.borrow().as_ref() {
+            crate::geometry::fit(t.width().max(1), t.height().max(1), bw, bh)
         } else {
             (bw, bh)
         };
-        let (mw, mh) = if let Some(tex) = self.texture.borrow().as_ref() {
-            crate::geometry::fit(tex.width().max(1), tex.height().max(1), bw, bh)
-        } else {
-            (bw, bh)
-        };
-
-        // 相框矩形 == 媒体矩形（已撤销"按百分比放大"：
-        // 改由遮罩把媒体裁进 PNG 内孔，不再靠缩放让位）
-        let fw = mw;
-        let fh = mh;
         let fx = self.frame_x.get();
         let fy = self.frame_y.get();
-        let mx = fx + (fw - mw) / 2;
-        let my = fy + (fh - mh) / 2;
+
+        // 素材显示比：以**相框中心**为基准缩放
+        let (mx, my, mw, mh) =
+            crate::geometry::zoom_in_frame(fx, fy, fw, fh, self.media_zoom.get());
         (fx, fy, fw, fh, mx, my, mw, mh)
     }
 }
@@ -247,6 +242,7 @@ glib::wrapper! {
 impl MediaView {
     pub fn new() -> Self {
         let view: Self = glib::Object::builder().build();
+        view.imp().media_zoom.set(1.0);
         view.add_css_class("photo-frame-view");
         view.setup_gestures();
         view
@@ -471,6 +467,17 @@ impl MediaView {
         self.imp().media_scale.get()
     }
 
+    /// 素材显示比（0.0~1.0；<1 时以相框中心为基准缩小）
+    pub fn set_media_zoom(&self, zoom: f64) {
+        let z = if zoom.is_finite() { zoom.clamp(0.0, 1.0) } else { 1.0 };
+        if (self.imp().media_zoom.get() - z).abs() < f64::EPSILON {
+            return;
+        }
+        self.imp().media_zoom.set(z);
+        self.queue_draw();
+    }
+
+    /// 媒体内缩比例（0.96 = 四周留 4% 余量）
     pub fn set_media_scale(&self, scale: f64) {
         let s = if scale.is_finite() {
             scale.clamp(0.2, 1.0)
