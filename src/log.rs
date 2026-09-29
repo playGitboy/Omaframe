@@ -4,7 +4,6 @@
 use std::fmt::Arguments;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -42,8 +41,6 @@ const MAX_LOG_BYTES: u64 = 1_000_000;
 struct Sink {
     level: Level,
     file: Option<File>,
-    #[allow(dead_code)]
-    path: Option<PathBuf>,
     truncated: bool,
 }
 
@@ -69,7 +66,6 @@ pub fn init(state_dir: &std::path::Path, level: Level) {
     let _ = SINK.set(Mutex::new(Sink {
         level,
         file,
-        path: Some(path),
         truncated: false,
     }));
 }
