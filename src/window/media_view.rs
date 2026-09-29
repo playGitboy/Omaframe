@@ -3,8 +3,8 @@
 //! **坐标模型（关键，别再改回去）**
 //! - 控件 = 整块 layer surface = **整个显示器**，尺寸恒定、永不重建
 //! - 相框左上角 `frame_x/frame_y` 直接来自配置（就是屏幕坐标）
-//! - 媒体尺寸 = `fit(素材比例, max_width×media_scale, max_height×media_scale)`
-//! - 相框 = 媒体 × 1.03，居中于 `frame_x/frame_y`
+//! - 相框尺寸 = 由 PNG 内孔最大范围 + 上限盒算出（见 `geometry::frame_size_for_box`）
+//! - 媒体矩形 = 内孔最大范围 × 显示比（见 `geometry::media_rect_in_hole`）
 //!
 //! 为什么 surface 要铺满整屏：拖动/缩放时指针必须**始终在控件内**。
 //! 之前 surface 只有"最大框"大小，指针一移出去 GTK 就停止派发事件，
@@ -41,8 +41,6 @@ mod imp {
         /// 相框左上角的屏幕坐标（配置 window.x / window.y）
         pub frame_x: Cell<i32>,
         pub frame_y: Cell<i32>,
-        /// 媒体内缩比例（已废弃：改用 PNG 内孔遮罩让位，此处恒为 1.0，仅为兼容旧配置）
-        pub media_scale: Cell<f64>,
         /// 素材显示比（0.0~1.0，1.0 = 铺满相框），**以相框中心为基准缩放**
         pub media_zoom: Cell<f64>,
         /// 相框 PNG 自身宽高比（>0 时相框不拉伸，按比例居中）
@@ -555,10 +553,6 @@ impl MediaView {
         (mw, mh)
     }
 
-    pub fn media_scale(&self) -> f64 {
-        self.imp().media_scale.get()
-    }
-
     /// 相框外扩比例（1.05 = 比素材大 5%，以素材中心为基准）
     pub fn set_frame_grow(&self, grow: f64) {
         let g = if grow.is_finite() {
@@ -599,19 +593,6 @@ impl MediaView {
     }
 
     /// 媒体内缩比例（0.96 = 四周留 4% 余量）
-    pub fn set_media_scale(&self, scale: f64) {
-        let s = if scale.is_finite() {
-            scale.clamp(0.2, 1.0)
-        } else {
-            1.0
-        };
-        if (self.imp().media_scale.get() - s).abs() < f64::EPSILON {
-            return;
-        }
-        self.imp().media_scale.set(s);
-        self.queue_draw();
-    }
-
     pub fn set_image(&self, texture: Option<gdk::Texture>, caption: &str) {
         {
             let imp = self.imp();

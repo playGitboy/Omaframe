@@ -147,26 +147,6 @@ pub fn place_media(
     )
 }
 
-/// 素材与相框同尺寸时的快捷版（缩放为中心基准）
-#[allow(dead_code)]
-pub fn zoom_in_frame(fx: i32, fy: i32, fw: i32, fh: i32, zoom: f64) -> (i32, i32, i32, i32) {
-    let z = if zoom.is_finite() {
-        zoom.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    let cx = fx as f64 + fw as f64 / 2.0;
-    let cy = fy as f64 + fh as f64 / 2.0;
-    let mw = ((fw as f64) * z).round().max(1.0) as i32;
-    let mh = ((fh as f64) * z).round().max(1.0) as i32;
-    (
-        (cx - mw as f64 / 2.0).round() as i32,
-        (cy - mh as f64 / 2.0).round() as i32,
-        mw,
-        mh,
-    )
-}
-
 pub fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
     if hi < lo {
         return lo;
@@ -236,22 +216,6 @@ mod tests {
 
 
 
-
-    #[test]
-    fn zoom_scales_from_frame_center() {
-        // 相框 (100,200) 400x300
-        // 100% → 媒体与相框同尺寸，起点相同
-        assert_eq!(zoom_in_frame(100, 200, 400, 300, 1.0), (100, 200, 400, 300));
-        // 70% → 280x210，中心 (300,350) 不变 → 起点 (160,245)
-        let (x, y, w, h) = zoom_in_frame(100, 200, 400, 300, 0.7);
-        assert_eq!((w, h), (280, 210));
-        assert_eq!((x, y), (160, 245));
-        // 中心不变
-        assert_eq!(x as f64 + w as f64 / 2.0, 300.0);
-        assert_eq!(y as f64 + h as f64 / 2.0, 350.0);
-        // 0% 也要至少 1px，不崩
-        assert_eq!(zoom_in_frame(0, 0, 400, 300, 0.0), (200, 150, 1, 1));
-    }
 
     #[test]
     fn media_is_centered_in_frame_even_if_aspect_differs() {

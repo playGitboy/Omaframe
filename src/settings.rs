@@ -1,12 +1,94 @@
-//! 设置窗口：libadwaita 原生风格，改动即时生效并自动保存。
+//! 设置**面板**（弹出式，Omarchy 插件那种手感）：libadwaita 原生风格，改动即时生效并自动保存。
+//!
+//! 行为：
+//! - 点状态栏图标 → 面板出现在顶栏右下方（layer-shell overlay 层，不参与平铺、不抢平铺位置）
+//! - 再点一次图标 / 按 Esc / **别的窗口或工作区拿到焦点** → 隐藏
+//!   （焦点变化靠 Hyprland IPC 事件判定：见 `hypr::on_focus_change`）
+//! - 隐藏即**销毁**窗口：下次打开看到的一定是最新配置（拖动改过的宽高会立刻反映出来）
 //!
 //! - `photo-frame settings` → 若已有实例在跑，通过 `$XDG_RUNTIME_DIR` 下的
-//!   Unix socket 通知它开设置窗；否则直接以设置窗模式启动。
+//!   Unix socket 通知它开面板；否则直接以设置模式启动。
 
 use crate::app::AppState;
 use adw::prelude::*;
+use layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// 面板宽度 / 目标高度上限（逻辑像素）；高度会按可用区自适应
+const PANEL_W: i32 = 360;
+const PANEL_H_MAX: i32 = 720;
+/// 与顶栏 / 屏幕边缘的间隙
+const PANEL_GAP: i32 = 6;
+
+/// 弹出面板（layer-shell overlay 层的一个小窗）
+pub struct Panel {
+    win: adw::ApplicationWindow,
+}
+
+impl Panel {
+    /// 挂到 Application 上（否则 GApplication 会看不到窗口而退出）
+    pub fn set_application(&self, app: &adw::Application) {
+        self.win.set_application(Some(app));
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.win.is_visible()
+    }
+}
+
+/// 显示面板（已经开着就只把它抬到前面，不重建）
+pub fn show(state: &Rc<AppState>) {
+    if let Some(p) = state.settings_window.borrow().as_ref() {
+        if p.is_visible() {
+            p.win.present();
+            return;
+        }
+    }
+    hide(state, "重建");
+    let panel = build(state);
+    panel.win.present();
+    panel.win.grab_focus();
+    *state.settings_window.borrow_mut() = Some(panel);
+    crate::debug!("设置面板 → 显示");
+}
+
+/// 隐藏并**释放**面板（`why` 只用于排查"到底谁把它关了"）
+pub fn hide(state: &Rc<AppState>, why: &str) {
+    let taken = state.settings_window.borrow_mut().take();
+    if let Some(p) = taken {
+        p.win.set_visible(false);
+        crate::debug!("设置面板 → 隐藏（{why}）");
+    }
+}
+
+/// 只在面板开着时隐藏（给"失去焦点"回调调用，避免无谓日志）
+pub fn hide_if_open(state: &Rc<AppState>) {
+    let open = state
+        .settings_window
+        .borrow()
+        .as_ref()
+        .map(|p| p.is_visible())
+        .unwrap_or(false);
+    if open {
+        hide(state, "失去焦点（其它窗口/工作区）");
+    }
+}
+
+/// 状态栏图标点击 = 开关
+pub fn toggle(state: &Rc<AppState>) {
+    let visible = state
+        .settings_window
+        .borrow()
+        .as_ref()
+        .map(|p| p.is_visible())
+        .unwrap_or(false);
+    if visible {
+        hide(state, "toggle");
+    } else {
+        show(state);
+    }
+}
 
 /// 通知运行中的实例打开设置窗口；成功返回 true
 pub fn request_open() -> bool {
@@ -57,20 +139,19 @@ pub fn serve_control(state: Rc<AppState>) {
                 let mut buf = [0u8; 64];
                 let n = s.read(&mut buf).unwrap_or(0);
                 let cmd = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-                if cmd == "settings" {
+                // 控制命令（供 `photo-frame settings`、快捷键绑定、测试脚本用）
+                let action: Option<fn(&Rc<AppState>)> = match cmd.as_str() {
+                    "settings" | "open" | "show" | "toggle" => Some(toggle),
+                    "hide" | "close" => Some(|st| hide(st, "控制命令")),
+                    _ => None,
+                };
+                if let Some(action) = action {
                     let ctx = ctx.clone();
-                    ctx.invoke(|| {
+                    ctx.invoke(move || {
                         STATE.with(|slot| {
                             let st = slot.borrow().clone();
-                            let Some(st) = st.as_ref() else {
-                                return;
-                            };
-                            if st.settings_window.borrow().is_none() {
-                                let w = build(st);
-                                w.present();
-                                *st.settings_window.borrow_mut() = Some(w);
-                            } else if let Some(w) = st.settings_window.borrow().as_ref() {
-                                w.present();
+                            if let Some(st) = st.as_ref() {
+                                action(st);
                             }
                         });
                     });
@@ -85,9 +166,10 @@ pub fn serve_control(state: Rc<AppState>) {
         .ok();
 }
 
-/// 紧凑样式：Adw 默认行高偏大，这里整体压缩
-const COMPACT_CSS: &str = "\
-window.photo-frame-settings { background-color: @theme_bg_color; }\
+/// 紧凑样式 + 弹出面板外观（Adw 默认行高偏大，这里整体压缩）
+const PANEL_CSS: &str = "\
+window.photo-frame-panel, window.photo-frame-panel.background { background-color: transparent; background-image: none; box-shadow: none; border-style: none; }\
+.panel-shell { background-color: @popover_bg_color; border: 1px solid @borders; border-radius: 12px; box-shadow: 0 6px 18px alpha(black, 0.35); margin: 8px; }\
 preferences-page { background-color: transparent; }\
 preferences-page > scrolledwindow > viewport { margin: 0; padding: 0; }\
 preferences-group { margin-top: 4px; margin-bottom: 4px; }\
@@ -104,10 +186,18 @@ switch { min-height: 22px; min-width: 38px; }\
 button.flat { min-height: 24px; min-width: 24px; padding: 0; }\
 ";
 
-fn apply_compact(win: &adw::ApplicationWindow) {
-    win.add_css_class("photo-frame-settings");
+/// 全局样式只注册一次
+/// （面板是"用完即销毁、再开重建"的，每次重建都注册会在显示服务上累积 provider）
+fn apply_theme() {
+    thread_local! { static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+    if DONE.with(|d| d.replace(true)) {
+        return;
+    }
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(COMPACT_CSS);
+    provider.connect_parsing_error(|_, section, err| {
+        crate::warn!("设置面板 CSS 解析错误 @{:?}: {err}", section.start_location());
+    });
+    provider.load_from_data(PANEL_CSS);
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -117,22 +207,42 @@ fn apply_compact(win: &adw::ApplicationWindow) {
     }
 }
 
-pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
+fn build(state: &Rc<AppState>) -> Panel {
+    apply_theme();
+
+    // ---------- 面板 ----------
     let win = adw::ApplicationWindow::builder()
         .title("桌面相框设置")
-        .default_width(380)
-        .default_height(520)
         .build();
-    // 固定尺寸 + 不可缩放：既保证紧凑，也让合成器把它当对话框浮动
-    // （否则会被当普通窗口平铺，看起来又大又难用）
-    // 注意：set_size_request 设的是**最小**尺寸，别拿它当目标尺寸用
+    // 要的是"弹出面板"而不是窗口：无标题栏、固定宽度、不缩放
+    win.set_decorated(false);
     win.set_resizable(false);
-    win.set_size_request(340, 360);
-    apply_compact(&win);
+    win.add_css_class("photo-frame-panel");
+    // 高度自适应：内容比上限高就滚动，屏幕小就跟着变小（不写死，兼容各种分辨率）
+    let panel_h = {
+        let connector = state.config.borrow().window.monitor.clone();
+        crate::window::target_monitor(&connector)
+            .as_ref()
+            .map(crate::window::monitor_bounds)
+            .map(|b| b.height - PANEL_GAP * 2)
+            .unwrap_or(PANEL_H_MAX)
+            .clamp(320, PANEL_H_MAX)
+    };
+    win.set_default_size(PANEL_W, panel_h);
+    win.set_visible(false);
+    win.init_layer_shell();
+    win.set_layer(Layer::Overlay);
+    win.set_namespace(Some("photo-frame-settings"));
+    // 独占键盘：Esc 与输入框都能用；隐藏后 surface 不映射，不会抢键盘
+    win.set_keyboard_mode(KeyboardMode::Exclusive);
+    win.set_exclusive_zone(0);
+    win.set_anchor(Edge::Top, true);
+    win.set_anchor(Edge::Right, true);
+    win.set_margin(Edge::Top, PANEL_GAP);
+    win.set_margin(Edge::Right, PANEL_GAP);
 
     let page = adw::PreferencesPage::new();
     page.set_title("相框");
-    page.set_icon_name(Some("preferences-desktop-display-symbolic"));
     page.set_icon_name(Some("preferences-desktop-display-symbolic"));
 
     // ---------------- 媒体 ----------------
@@ -443,19 +553,30 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
     }
     page.add(&g_pos);
 
-    // scrolledwindow 不把内容自然尺寸当作窗口尺寸 → 窗口可以保持紧凑
-    win.set_content(Some(&page));
+    // 外层容器负责圆角 + 背景（窗口自身透明，四角才不会露出方形底色）
+    let shell = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    shell.add_css_class("panel-shell");
+    // 固定宽度 + 内容自然高度（内容过高时由内部 scrolledwindow 滚动）
+    shell.set_size_request(PANEL_W, -1);
+    shell.append(&page);
+    win.set_content(Some(&shell));
 
-    // 关闭请求：隐藏窗口并清掉状态里的强引用。
-    // （我们把窗口存在 AppState 里，直接 gtk close 不会真正销毁它）
+    // 关闭请求（Esc 走 close()）→ 隐藏并释放
     {
         let st = state.clone();
-        let handle = win.clone(); // GObject 引用（廉价）
         win.connect_close_request(move |_| {
-            crate::debug!("设置页关闭请求 → 隐藏并释放引用");
-            handle.set_visible(false);
-            *st.settings_window.borrow_mut() = None;
+            hide(&st, "close（Esc/外部关闭请求）");
             glib::Propagation::Stop
+        });
+    }
+
+    // 失去焦点（例如合成器把焦点交给别的窗口）→ 自动隐藏，和弹出面板一致
+    {
+        let st = state.clone();
+        win.connect_is_active_notify(move |w| {
+            if w.is_visible() && !w.is_active() {
+                hide(&st, "失去焦点");
+            }
         });
     }
 
@@ -494,7 +615,7 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         });
     }
 
-    win
+    Panel { win }
 }
 
 fn refresh_media(state: &Rc<AppState>) {

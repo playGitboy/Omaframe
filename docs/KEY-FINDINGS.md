@@ -7,7 +7,7 @@
 
 ```
 layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
-└── 相框矩形 = 配置 window.x/y（屏幕坐标）+ fit(素材比例, max×media_scale)×1.03
+└── 相框矩形 = 配置 window.x/y（相框左上角）+ fit(PNG比例, 目标盒)
     ├── 媒体纹理（照片/视频帧）
     ├── PNG 相框（比素材大 3%，居中）
     └── 悬停控制层（底部中央 ▶/⏸；左/右半区点击切上/下一项）
@@ -46,7 +46,7 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 | 视频加载前黑闪 | 切视频时先清纹理，首帧 0.2~0.5s 内 surface 无内容 | 保留上一项画面，首帧到达再替换 |
 | 托盘图标点击无反应 | quickshell 发 `Activate(ii)`（两个参数），只声明一个 → GDBus 以 InvalidArgs 拒绝 | XML 声明 `x,y` 两个 int；删掉指向空对象的 `Menu` 属性 |
 | **崩了**（SIGABRT）| `GObject::set_property` 写入**不存在的属性**（`propagate-natural-width` 不是 `AdwPreferencesPage` 的属性）→ glib 直接 panic→abort | 删掉该行；凡是设属性一律先确认目标对象真的有这个属性 |
-| 设置页窗口缩不小 | `set_size_request()` 设的是**最小**尺寸，误当目标尺寸用（400x560）→ 窗口被撑死 | 只把它当下限（340x360），目标尺寸用 `default_width/height` |
+| 设置页窗口缩不小 | `set_size_request()` 设的是**最小**尺寸，误当目标尺寸用（400x560）→ 窗口被撑死 | 面板尺寸用 `set_default_size`；`set_size_request` 只当宽度下限 |
 | 设置页 Esc 关不掉 | `EventControllerKey` 默认在 bubble 阶段，焦点在 Entry 里时按键先被输入框消费 | 改用 **capture 阶段**的 `EventControllerKey`（+bubble 兜底），焦点在输入框也能关窗 |
 | 位置停靠除居中外都偏 | 用**画布**尺寸贴靠，而相框在画布内居中 | 按**相框矩形**贴靠：`画布位置 = 期望相框位置 − 相框偏移` |
 | 改边距/位置后重启丢失 | `apply_anchor` 只 `edit()` 没 `commit()` | 末尾补 `commit()` |
@@ -69,7 +69,7 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 - **坑**：遮罩是**灰度图**（无 alpha），读像素必须按 **1 字节/像素**；
   用 `n_channels()` 去乘会把行内位置算错，内孔边界整体偏移（曾导致 40px 的孔变成 14px）。
 - 已撤销：`FRAME_GROWTH`(相框×1.03) 与 `media_scale`(媒体×0.96) 两个"百分比缩放" ——
-  让位交给遮罩，`media_scale` 字段仅为兼容旧配置保留。
+  让位交给遮罩；`display.media_scale` 字段已**彻底删除**（旧配置里那行会被 serde 忽略，不影响加载）。
 - **三个必须记住的坑（都真踩过，症状都是"媒体从相框漏出/露边"）**：
   1. **`DestOut` 必须先 `translate` 到相框矩形**：遮罩按"相框矩形尺寸"生成，
      但 cairo 上下文原点是 surface (0,0)。少了平移就擦错区域 → 媒体整片漏在相框外。
@@ -91,9 +91,9 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 ## 三点六、视频清晰度（易回退的一个坑）
 
 - **症状**：视频在相框里发糊（图片清晰）。
-- **根因**：ffmpeg 管线只按**逻辑像素**出帧（`max × media_scale`，如 358×200），
+- **根因**：ffmpeg 管线只按**逻辑像素**出帧（如 358×200），
   而显示器有缩放（本机 1.25×，GDK `scale_factor()` 报 2）→ 合成器把帧再放大 → 模糊。
-- **修法**：`show_video` 的目标框 = `max × media_scale × monitor_scale`（与图片 `decode_box` 一致），
+- **修法**：`show_video` 的目标框 = `上限盒 × (1+grow) × monitor_scale`（与图片 `decode_box` 一致），
   实测 358×200 → **713×401**；缩放器从默认/bilinear 换成 **lanczos**（小窗缩小画质差别明显）。
 
 ## 三点七、内置相框库 + 相框样式 + 显示比
@@ -118,8 +118,8 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
   各相框内孔最大范围（相对 PNG）：木纹 0.07~0.898 × 0.008~0.854；花环 0.051~0.969 × 0.05~0.937；
   猫线 0.061~0.933 × 0.251~0.91（内孔本身就是扁的 → 素材自然被裁成扁幅面）。
 - **图片/视频清晰度（又一个易回退的坑）**：解码尺寸必须 **≥ 实际绘制矩形**。
-  `display.media_scale(0.96)` 是**废弃字段**，`decode_box`/视频 `set_box` 里**绝对不能再乘它** ——
-  乘了以后解码比绘制小 4%，合成器再放大回来 → 图片/视频发糊（用户报的"加载图片模糊"）。
+  历史上 `decode_box`/视频 `set_box` 乘过一个"媒体内缩 0.96"的系数，导致解码比绘制小 4%，
+  合成器再放大回来 → 图片/视频发糊（用户报的"加载图片模糊"）。该字段已删除，别再引入类似系数。
   正确做法：`上限盒 × (1+grow%) × monitor_scale() × 1.06`（1.06 是 cover 裁切余量）。
 - 显示比实现：`media_rect_in_hole(...)` —— 以**内孔可用区中心**为基准缩放
   （不规则内孔的中心未必是相框中心，所以不能再按相框中心放）。
@@ -134,7 +134,7 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
   曾经把 x/y 当"素材左上角"再居中相框，相框一大就整体偏出屏幕（日志 `输入区域 → …+0+112`）。
 - 右下角缩放拖动改的是**上限盒**（`geometry::resize_target_box`）：盒宽增量 = 鼠标位移 / k，
   `k = 当前素材宽 / 当前盒宽` → 手感依旧"鼠标走多少照片变多少"；松手才写配置。
-- `display.media_scale`：**已废弃**（相框改遮罩后不再需要百分比内缩），仅为兼容旧配置保留。
+- `display.media_scale`：**已删除**（旧配置里残留该行会被忽略）。
 - `frame.desktop_enabled` = 默认 true；关掉后相框从桌面隐藏（媒体继续解码，设置/托盘不受影响）。
 - `frame.style` = 内置相框库里的 PNG 文件名；`frame.zoom` = 素材显示比（0-100，以相框中心缩放）；
   `frame.grow_percent` = 相框比素材大多少（默认 5）；`frame.debug_hud` = 调试浮层（持久化）。
@@ -197,3 +197,29 @@ PHOTO_FRAME_LOG=debug ~/.local/bin/photo-frame   # 调试日志
 grep -E "输入区域|Update" ~/.local/state/omarchy-photo-frame/logs/photo-frame.log -c
 coredumpctl list | grep photo-frame      # 崩溃自查（用户要求：主动盯崩溃并修）
 ```
+
+## 三点八、设置面板（弹出式，2026-09-29）
+
+需求：点状态栏图标弹出设置页；Esc 或**失去焦点**自动隐藏（Omarchy 插件那种手感）。
+
+实现（`settings.rs`）：
+1. 面板 = `adw::ApplicationWindow` + `layer_shell`：`Layer::Overlay`、锚 `Top|Right`、无标题栏、
+   `KeyboardMode::Exclusive`（Esc 与输入框都能用）、`set_default_size(360, min(可用高-12, 720))`。
+   → 不参与平铺、永远在普通窗口之上、不进 `hyprctl clients`。
+2. **状态栏图标点击 = 开关**（`tray` 回调 → `settings::toggle`）；`photo-frame settings` 走控制 socket（`toggle`）。
+3. Esc：capture 阶段 `EventControllerKey` → `close_request` → `hide()`（两条路径都验证过）。
+4. **失去焦点 = 别的窗口/工作区拿到焦点**：`hypr::on_focus_change()`（挂在已有的 Hyprland IPC 事件上，
+   匹配 `activewindow(v2)/openwindow/workspace(v2)/focusedmon`）→ `settings::hide_if_open()`。
+5. 隐藏即**销毁**窗口（`settings_window.take()`）：下次打开必然是最新配置，也不会残留 layer surface。
+6. CSS 只注册一次（面板用完即销毁再重建，每次注册会在 display 上累积 provider）。
+
+踩过的坑（都很隐蔽，别重犯）：
+- **全透明的 layer surface 会被合成器当成不可见**：Hyprland `hyprctl layers` 里显示 `a: 0`，
+  并且**连输入一起跳过**。所以"透明遮罩盖住屏幕、点它关面板"这条路走不通：
+  即使给它画上内容（a 变 1）也拿不到点击 —— Hyprland 的输入命中顺序里，
+  覆盖该点的普通窗口会先拿到点击（实测点击落到终端，`activewindow` 不变化）。
+  → 结论：不要用遮罩做"点外面关闭"，用**焦点变化**驱动。
+- **点击"已经是活跃窗口"的窗口不会夺走面板键盘**（Exclusive layer surface 仍持有键盘）：
+  实测点完之后按 Esc 仍能关面板。所以"没自动关"不是 bug —— 那种情况下面板并没有失去焦点。
+- 四边锚定的 layer surface 由合成器拉伸，**GTK 侧不会收到 resize**，控件分配会停在最小值
+  （实测 1x1）。要拿真实尺寸得在分配之后读，或者干脆按显示器尺寸算。

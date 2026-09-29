@@ -329,7 +329,6 @@ impl MediaPlayer {
 
     /// 启动：后台扫描 → 显示第一项 → 开始轮换
     pub fn start(self: &Rc<Self>) {
-        self.apply_media_scale();
         let this = self.clone();
         self.lib.on_scanned(Box::new(move || {
             this.after_scan();
@@ -396,7 +395,6 @@ impl MediaPlayer {
         // 视频必须按**设备像素**解码：显示器有缩放（如 1.25x / HiDPI），
         // 只按逻辑像素出帧会被合成器再放大 → 模糊。
         // 这里与图片路径（decode_box）保持一致：上限盒 × (1+grow) × 屏幕缩放。
-        // 不要乘废弃的 media_scale（会让出帧比绘制小 4% → 合成器放大 → 视频发糊）。
         let screen_scale = crate::window::target_monitor(&connector)
             .as_ref()
             .map(monitor_scale)
@@ -484,8 +482,8 @@ impl MediaPlayer {
             .unwrap_or(1.0);
         // **解码按设备像素、且必定覆盖实际绘制矩形**：
         // 实际绘制矩形 = 内孔最大范围 ≤ 上限盒 × (1+grow)，按这个上界解码就永不上采样。
-        // 关键：**不要再乘废弃的 media_scale(0.96)** —— 那会让解码比绘制小 4%，
-        // 合成器把这个 4% 放大回来 → 图片发糊（用户报的"加载图片模糊"）。
+        // 关键：解码尺寸必须 ≥ 实际绘制矩形，否则合成器放大 → 图片发糊。
+        // （历史上曾乘过一个"媒体内缩 0.96"的系数，比绘制小 4%，就是模糊的根因。）
         // 1.06 是 cover 裁切余量。
         let bw = (mw as f64 * k * scale * 1.06).round().max(16.0) as i32;
         let bh = (mh as f64 * k * scale * 1.06).round().max(16.0) as i32;
@@ -766,14 +764,6 @@ impl MediaPlayer {
     }
 
     /// 把配置里的媒体内缩比例同步给绘制控件
-    pub fn apply_media_scale(self: &Rc<Self>) {
-        self.apply_zoom();
-        let s = self.state.config.borrow().display.media_scale;
-        if let Some(w) = self.state.window() {
-            w.view.set_media_scale(s);
-        }
-    }
-
     /// 设置变更后即时生效：尺寸上限、轮换参数、相框、视频参数
     pub fn apply_settings(self: &Rc<Self>) {
         let (slides_enabled, interval, random, fps, muted, max_w, max_h) = {
@@ -793,7 +783,6 @@ impl MediaPlayer {
             v.set_box(max_w, max_h);
         }
         let _ = (random, fps, muted);
-        self.apply_media_scale();
         // 关键：尺寸上限变了，之前缓存的纹理是**旧尺寸**，不清缓存会看起来"设置无效"
         self.images.clear_cache();
         // 重新按新的尺寸上限计算当前媒体的显示尺寸

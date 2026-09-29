@@ -30,6 +30,19 @@ impl Rect {
     }
 }
 
+/// 焦点类事件：会影响覆盖关系，同时意味着"弹出面板该收起来了"
+fn is_focus_change(event: &str) -> bool {
+    matches!(
+        event,
+        "activewindow"
+            | "activewindowv2"
+            | "openwindow"
+            | "workspace"
+            | "workspacev2"
+            | "focusedmon"
+    )
+}
+
 /// 会影响覆盖关系的事件
 fn is_relevant(event: &str) -> bool {
     matches!(
@@ -98,6 +111,17 @@ impl VisibilityMonitor {
                         continue;
                     }
                     crate::debug!("IPC 事件 {}", ev);
+                    // 焦点类事件 → 通知弹出面板（"失去焦点就收起来"）
+                    if is_focus_change(ev) {
+                        let ctx2 = ctx.clone();
+                        ctx2.invoke(|| {
+                            FOCUS_CB.with(|slot| {
+                                if let Some(cb) = slot.borrow().as_ref() {
+                                    cb();
+                                }
+                            });
+                        });
+                    }
                     // 只传事件名（Send），判定在主线程做
                     let ctx = ctx.clone();
                     ctx.invoke(move || {
@@ -196,7 +220,16 @@ impl VisibilityMonitor {
 }
 
 // 主线程侧的 monitor（读线程通过 invoke 回调里取用）
+/// 注册"焦点变化"回调（主线程调用；替换式注册）。
+/// 弹出面板用它实现"失去焦点自动收起"（别的窗口激活 / 换工作区时触发）。
+pub fn on_focus_change(cb: impl Fn() + 'static) {
+    FOCUS_CB.with(|slot| *slot.borrow_mut() = Some(Rc::new(cb)));
+}
+
 thread_local! {
+    /// 焦点变化回调（主线程）；弹出面板用它实现"失去焦点自动收起"
+    static FOCUS_CB: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+
     static MONITOR: RefCell<Option<Rc<VisibilityMonitor>>> = const { RefCell::new(None) };
     static AVAILABLE: Cell<bool> = const { Cell::new(false) };
 }

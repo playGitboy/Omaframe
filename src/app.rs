@@ -17,7 +17,8 @@ pub struct AppState {
     /// Hyprland 覆盖检测（不可用时为 None）
     pub visibility: RefCell<Option<Rc<crate::hypr::VisibilityMonitor>>>,
     /// 设置窗口
-    pub settings_window: RefCell<Option<adw::ApplicationWindow>>,
+    /// 设置**面板**（弹出式：点状态栏图标开、Esc/点外面关）
+    pub settings_window: RefCell<Option<crate::settings::Panel>>,
     /// 托盘图标（无托盘服务时为 None）
     pub tray: RefCell<Option<Rc<crate::tray::Tray>>>,
     /// 配置是否刚刚被程序修改过（退出时需要再存一次）
@@ -231,11 +232,11 @@ pub fn run(args: &[String]) -> Result<u8, String> {
 
     let app_state = state.clone();
     app.connect_activate(move |app| {
-        if want_settings && app_state.settings_window.borrow().is_none() {
-            let w = crate::settings::build(&app_state);
-            w.set_application(Some(app));
-            w.present();
-            *app_state.settings_window.borrow_mut() = Some(w);
+        if want_settings {
+            crate::settings::show(&app_state);
+            if let Some(p) = app_state.settings_window.borrow().as_ref() {
+                p.set_application(app);
+            }
         }
         if quit_only {
             return;
@@ -272,35 +273,21 @@ pub fn run(args: &[String]) -> Result<u8, String> {
                 let p2 = player.clone();
                 monitor.on_change(move |visible| p2.set_active(visible));
                 *app_state.visibility.borrow_mut() = Some(monitor);
+
+                // 弹出面板：别的窗口拿到焦点（或换工作区）就自动收起
+                let st_panel = app_state.clone();
+                crate::hypr::on_focus_change(move || crate::settings::hide_if_open(&st_panel));
             }
         }
     });
 
-    // 状态栏图标：左键显示/隐藏设置窗口
+    // 状态栏图标：左键开关设置面板
     {
         let st = state.clone();
         if let Some(tray) = crate::tray::Tray::new(
             "emblem-photos-symbolic",
             "桌面相框 · 点击打开设置",
-            move || {
-                if st.settings_window.borrow().is_none() {
-                    let w = crate::settings::build(&st);
-                    w.present();
-                    *st.settings_window.borrow_mut() = Some(w);
-                } else {
-                    let w = st.settings_window.borrow().clone();
-                    match w {
-                        Some(w) => {
-                            if w.is_visible() {
-                                w.set_visible(false);
-                            } else {
-                                w.present();
-                            }
-                        }
-                        None => {}
-                    }
-                }
-            },
+            move || crate::settings::toggle(&st),
         ) {
             *state.tray.borrow_mut() = Some(tray);
         }

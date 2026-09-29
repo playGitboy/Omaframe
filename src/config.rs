@@ -94,8 +94,6 @@ pub struct DisplayConfig {
     pub cache_budget_mb: usize,
     /// 单边解码像素上限（防止超大图吃内存）
     pub max_decode_px: i32,
-    /// 媒体相对组件的内缩比例（0.96 = 四周留 2% 空隙，让相框内沿与照片之间有细边）
-    pub media_scale: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -180,7 +178,6 @@ impl Default for DisplayConfig {
             cache_items: 12,
             cache_budget_mb: 32,
             max_decode_px: 4096,
-            media_scale: 0.96,
         }
     }
 }
@@ -292,11 +289,6 @@ impl Config {
         d.cache_items = d.cache_items.clamp(1, 64);
         d.cache_budget_mb = d.cache_budget_mb.clamp(4, 512);
         d.max_decode_px = d.max_decode_px.clamp(1024, 16_384);
-        d.media_scale = if d.media_scale.is_finite() {
-            d.media_scale.clamp(0.5, 1.0)
-        } else {
-            0.96
-        };
 
         self.slideshow.interval = self.slideshow.interval.clamp(1, 86_400);
         self.slideshow.enabled = self.slideshow.interval > 0;

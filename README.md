@@ -31,7 +31,7 @@ make install        # 只写用户目录，不需要 root，不修改 hypr/omarc
 
 ```bash
 photo-frame            # 启动桌面相框
-photo-frame settings   # 打开设置窗口（已有实例则通知它打开）
+photo-frame settings   # 打开设置面板（已有实例则通知它打开）
 photo-frame quit       # 退出运行中的实例
 PHOTO_FRAME_LOG=debug photo-frame   # 调试日志
 ```
@@ -40,7 +40,7 @@ PHOTO_FRAME_LOG=debug photo-frame   # 调试日志
 
 启动后会注册一个 **StatusNotifierItem** 托盘图标（图标名 `emblem-photos-symbolic`）：
 
-* **左键点击** = 显示 / 隐藏设置窗口
+* **左键点击** = 开关设置**面板**（顶栏右下方弹出；再点一次 / Esc / 别的窗口拿到焦点 都会自动收起）
 * 没装托盘服务（`org.kde.StatusNotifierWatcher`）的桌面会自动跳过，只记日志，不影响相框
 
 ## 窗口架构（重要）
@@ -87,7 +87,6 @@ recursive = true
 [display]
 max_width = 400         # 相框**固定画布**尺寸（surface 就是这个大小）
 max_height = 600
-media_scale = 0.96      # 媒体相对组件的内缩比例：0.96 = 照片四周留 2% 细边
                         # （解码分辨率也按它缩，省 8% 内存/带宽）
 cache_items = 12
 cache_budget_mb = 32    # 缓存字节预算（低端机可调小）
@@ -109,7 +108,7 @@ enabled = true
 style = "木纹.png"          # 内置相框库 frame/ 下的 PNG 文件名
 zoom = 100                 # 素材显示比 0-100（以相框中心为基准缩放）
 # 相框 PNG 建议：900x760 左右，两层圆角框，**四角与中心都透明**；
-# 框宽（外沿到内孔）约 60/900 ≈ 6.7%，比媒体内缩 4% 略大，看起来才有"卡纸"感
+# 框宽（外沿到内孔）约 60/900 ≈ 6.7%，照片正好落在内孔最大范围上
 
 [window]
 x = 32
@@ -148,7 +147,7 @@ src/
 │   ├── image.rs          后台解码 + 缩放 + LRU 缓存 + 预取
 │   ├── library.rs        媒体列表与当前索引
 │   └── video.rs          ffmpeg 帧管道 → GdkMemoryTexture
-├── settings.rs           libadwaita 设置窗口（改动即时生效）
+├── settings.rs           libadwaita 设置**面板**（弹出式，改动即时生效）
 └── window/               layer-shell 窗口 + 自绘媒体控件
 ```
 

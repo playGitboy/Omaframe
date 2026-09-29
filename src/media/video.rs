@@ -123,7 +123,7 @@ impl VideoPlayer {
         }))
     }
 
-    /// 目标显示尺寸（调用方已按 media_scale 折算过）
+    /// 目标显示尺寸（设备像素；调用方按上限盒 × 外扩 × 屏幕缩放折算）
     pub fn set_box(&self, w: i32, h: i32) {
         self.box_w.set(w.max(16));
         self.box_h.set(h.max(16));

@@ -15,7 +15,7 @@
 
 use gdk_pixbuf::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// alpha 低于该值算"内孔"（可放媒体）。
 /// 取 ~0.63 而不是 0：真实相框 PNG 的外沿常有**半透明羽化带**（alpha 0.1~0.9）。
@@ -54,8 +54,6 @@ pub struct HoleMask {
 }
 
 pub struct FrameRenderer {
-    #[allow(dead_code)]
-    path: PathBuf,
     /// 原始相框（未缩放）
     source: RefCell<Option<gdk_pixbuf::Pixbuf>>,
     /// 已缓存的相框纹理：(逻辑尺寸, 纹理)
@@ -100,7 +98,6 @@ impl FrameRenderer {
         let inner = built.as_ref().map(|m| m.hole);
         let mask = built.map(|m| m.mask);
         Some(Self {
-            path: path.to_path_buf(),
             source: RefCell::new(Some(pixbuf)),
             cache: RefCell::new(None),
             mask_cache: RefCell::new(None),

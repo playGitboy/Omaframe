@@ -71,7 +71,6 @@ impl FrameWindow {
             let cfg = state.config.borrow();
             view.set_box(cfg.display.max_width, cfg.display.max_height);
             view.set_frame_pos(cfg.window.x, cfg.window.y);
-            view.set_media_scale(cfg.display.media_scale);
         }
 
         let root = gtk::Overlay::new();
