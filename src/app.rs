@@ -250,6 +250,11 @@ pub fn run(args: &[String]) -> Result<u8, String> {
             if let Some(player) = crate::player::MediaPlayer::new(app_state.clone()) {
                 player.start();
                 player.apply_desktop_visible();
+                // 重启后自动恢复"调试浮层"开关
+                if app_state.config.borrow().frame.debug_hud {
+                    fw.set_debug(true);
+                    fw.update_hud(&app_state, "");
+                }
                 *app_state.player.borrow_mut() = Some(player.clone());
 
                 // 「被窗口覆盖则暂停」：Hyprland IPC 事件驱动

@@ -87,9 +87,12 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 - 配置：`frame.style = "木纹.png"`（**文件名**，不是绝对路径）；`frame.zoom = 0..100`（默认 100）。
   旧的 `frame.path` 会在 `Config::sanitize()` 里**自动迁移**成 `style`
   （`Loaded.migrated` 标记 → boot 立即落盘，不等退出）。
-- **中心对齐**：相框按 **PNG 自身比例**在上限盒内取最大（`fit(png_aspect, box)`，**不拉伸**），
-  素材 `fit(素材比例, 相框尺寸)` 后由 `geometry::place_media(fx,fy,fw,fh,mw,mh,zoom)`
-  以**相框中心**为基准放置/缩放 → 两者中心恒等（实测误差 0.5px = 整数取整残差）。
+- **尺寸关系**：素材矩形 = `fit(素材比例, 上限盒)`；相框矩形 = **素材 × (1+grow_percent)**，
+  默认 `grow_percent = 5`（每边大 2.5%），同中心。
+  例：素材 500×300 → 相框 525×315（实测 1.050x ✓）。
+  若 PNG 自身比例与素材差 >25%，改用 PNG 自己的比例（避免明显拉伸）。
+- **中心对齐**：素材由 `geometry::place_media(fx,fy,fw,fh,mw,mh,zoom)` 以**相框中心**为基准
+  放置/缩放 → 两者中心恒等（实测误差 0.5px = 整数取整残差）。
   注意：很多相框的**内孔本身偏心**（电视TV/猫线/木纹/炫彩），所以"按孔位置放素材"会偏，
   必须以**相框中心**为准。
 - 显示比实现：`geometry::place_media(...)`（`zoom_in_frame` 是同尺寸快捷版） —— **以相框矩形中心为基准**缩放，
@@ -102,7 +105,10 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 - `window.x/y` = **相框左上角**的屏幕坐标（不是 layer 边距；layer 边距恒为 0）。
 - `display.media_scale`：**已废弃**（相框改遮罩后不再需要百分比内缩），仅为兼容旧配置保留。
 - `frame.desktop_enabled` = 默认 true；关掉后相框从桌面隐藏（媒体继续解码，设置/托盘不受影响）。
-- `frame.style` = 内置相框库里的 PNG 文件名；`frame.zoom` = 素材显示比（0-100，以相框中心缩放）。
+- `frame.style` = 内置相框库里的 PNG 文件名；`frame.zoom` = 素材显示比（0-100，以相框中心缩放）；
+  `frame.grow_percent` = 相框比素材大多少（默认 5）；`frame.debug_hud` = 调试浮层（持久化）。
+- **所有设置即时落盘**：设置页每行都走 `AppState::update()`（内部 = `edit` + `commit`），
+  拖动/贴靠在松手时 `commit`；重启后全部自动恢复（含调试浮层）。
 - 相框矩形 == 媒体矩形；`frame.enabled` 关闭时纯展示媒体。
 - 输入区域平时 = 相框矩形（**相框外点击穿透桌面**，不挡操作）；拖动中 = 整屏。
 - 拖拽判定阈值 2px（`gtk-dnd-drag-threshold`，默认 8px 太迟钝）。

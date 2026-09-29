@@ -217,10 +217,6 @@ impl FrameWindow {
         self.view.queue_draw();
     }
 
-    pub fn has_debug(&self) -> bool {
-        self.hud.borrow().is_some()
-    }
-
     /// 调试浮层开关（运行时生效）
     pub fn set_debug(&self, on: bool) {
         crate::debug!("调试浮层 → {on}");

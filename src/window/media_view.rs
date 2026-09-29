@@ -47,6 +47,8 @@ mod imp {
         pub media_zoom: Cell<f64>,
         /// 相框 PNG 自身宽高比（>0 时相框不拉伸，按比例居中）
         pub frame_aspect: Cell<f64>,
+        /// 相框相对素材的外扩比例（0.05 = 大 5%）
+        pub frame_grow: Cell<f64>,
         pub texture: RefCell<Option<gdk::Texture>>,
         pub frame: RefCell<Option<gdk::Texture>>,
         pub controls: Controls,
@@ -250,6 +252,7 @@ impl MediaView {
     pub fn new() -> Self {
         let view: Self = glib::Object::builder().build();
         view.imp().media_zoom.set(1.0);
+        view.imp().frame_grow.set(0.05); // 相框默认比素材大 5%
         view.add_css_class("photo-frame-view");
         view.setup_gestures();
         view
@@ -472,6 +475,20 @@ impl MediaView {
 
     pub fn media_scale(&self) -> f64 {
         self.imp().media_scale.get()
+    }
+
+    /// 相框外扩比例（1.05 = 比素材大 5%，以素材中心为基准）
+    pub fn set_frame_grow(&self, grow: f64) {
+        let g = if grow.is_finite() {
+            grow.clamp(0.0, 0.5)
+        } else {
+            0.05
+        };
+        if (self.imp().frame_grow.get() - g).abs() < f64::EPSILON {
+            return;
+        }
+        self.imp().frame_grow.set(g);
+        self.queue_draw();
     }
 
     /// 相框 PNG 自身宽高比（>0 时按比例居中，不拉伸）

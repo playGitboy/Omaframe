@@ -130,6 +130,10 @@ pub struct FrameConfig {
     pub style: String,
     /// 素材显示比（0-100，100 = 铺满相框内孔）
     pub zoom: u8,
+    /// 相框相对素材的外扩百分比（默认 5 = 相框每边大 2.5%，四周居中）
+    pub grow_percent: u8,
+    /// 调试浮层（持久化，重启后保持）
+    pub debug_hud: bool,
     /// 旧字段（v1 早期）：PNG 绝对路径，仅用于自动迁移到 `style`
     pub path: String,
 }
@@ -209,6 +213,8 @@ impl Default for FrameConfig {
             desktop_enabled: true,
             style: String::new(),
             zoom: 100,
+            grow_percent: 5,
+            debug_hud: false,
             path: String::new(),
         }
     }
@@ -331,6 +337,7 @@ impl Config {
             self.frame.style = name;
         }
         self.frame.zoom = self.frame.zoom.min(100);
+        self.frame.grow_percent = self.frame.grow_percent.min(50);
     }
 }
 

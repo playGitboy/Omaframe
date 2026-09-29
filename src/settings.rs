@@ -428,16 +428,14 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         let row = adw::SwitchRow::new();
         row.set_title("调试浮层");
         row.set_subtitle("在相框左上角显示后端/尺寸/位置");
-        row.set_active(
-            state
-                .window()
-                .map(|w| w.has_debug())
-                .unwrap_or(false),
-        );
+        row.set_active(state.config.borrow().frame.debug_hud);
         let st = state.clone();
         row.connect_active_notify(move |r| {
+            let v = r.is_active();
+            // 即时保存：重启后自动恢复
+            st.update(|c| c.frame.debug_hud = v);
             if let Some(w) = st.window() {
-                w.set_debug(r.is_active());
+                w.set_debug(v);
                 w.update_hud(&st, "");
             }
         });
