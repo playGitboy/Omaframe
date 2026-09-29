@@ -123,6 +123,7 @@ impl FrameRenderer {
         self.inner.get()
     }
 
+
     /// 相框纹理（带缓存）
     pub fn texture_for(&self, w: i32, h: i32) -> Option<gdk::Texture> {
         if w <= 1 || h <= 1 {
@@ -264,17 +265,10 @@ pub fn build_hole_mask(pb: &gdk_pixbuf::Pixbuf) -> Option<HoleMask> {
     if hx1 <= hx0 || hy1 <= hy0 {
         return None; // 没有内孔
     }
-    // 内孔 bbox 修正：用"密集核心"。相框常带报纸角/花角等不透明装饰伸进内孔，
-    // 透明像素整体 min/max 会把这些装饰周围的透明边距算进内孔，
-    // 媒体于是画到装饰上/框沿上（用户报的"图片上边缘露出相框"）。
-    // 做法：逐行/逐列取最长的"非外部透明"连续段，只保留长度 ≥ 该维 1/3 的段，
-    // 再用这些段**中心的中位数** + **长度的中位数**作为核心范围。
-    if let Some((nx0, nx1, ny0, ny1)) = dense_core(w as i32, h as i32, &outside, &transparent) {
-        hx0 = nx0.clamp(hx0, hx1);
-        hx1 = nx1.clamp(hx0, hx1);
-        hy0 = ny0.clamp(hy0, hy1);
-        hy1 = ny1.clamp(hy0, hy1);
-    }
+    // 内孔范围 = 整片透明区域的**最大宽高**（min/max 外接范围）。
+    // 不取"逐行最宽段的中位数"之类的保守值：那样会把可用区算小
+    // （例如木纹顶部有报纸角装饰，按中位数会把上沿压到 0.135，
+    //   素材白白小一圈）。不规则形状交给遮罩裁剪即可 —— 素材该占满最大范围。
     let hole = InnerHole {
         x0: hx0 as f64 / w as f64,
         y0: hy0 as f64 / h as f64,
@@ -379,71 +373,3 @@ mod tests {
     }
 }
 
-/// 内孔"密集核心"：逐行/逐列取最长的内孔连续段，只保留长度 ≥ 该维 1/3 的段，
-/// 再用这些段中心的中位数与长度的中位数交叉出核心范围。
-/// 相框 PNG 常带不透明装饰（报纸角/花角/挂饰）伸进内孔，
-/// 直接用透明像素整体 min/max 会把装饰边距算成内孔，媒体就会画到装饰或框沿上。
-fn dense_core(
-    w: i32,
-    h: i32,
-    outside: &[bool],
-    transparent: &dyn Fn(i32, i32) -> bool,
-) -> Option<(i32, i32, i32, i32)> {
-    let is_hole = |x: i32, y: i32| -> bool {
-        if x < 0 || y < 0 || x >= w || y >= h {
-            return false;
-        }
-        let i = (y * w + x) as usize;
-        !outside[i] && transparent(x, y)
-    };
-    // 收集所有"够长"的内孔段
-    let collect = |horizontal: bool, min_len: i32| -> Vec<(i32, i32)> {
-        let n = if horizontal { w } else { h };
-        let mut segs = Vec::new();
-        for i in 0..n {
-            let mut run = 0i32;
-            let mut start = 0i32;
-            for j in 0..=n {
-                let ok = j < n && if horizontal { is_hole(j, i) } else { is_hole(i, j) };
-                if ok {
-                    if run == 0 {
-                        start = j;
-                    }
-                    run += 1;
-                } else if run > 0 {
-                    if run >= min_len {
-                        segs.push((start, j - 1));
-                    }
-                    run = 0;
-                }
-            }
-        }
-        segs
-    };
-    let median = |mut v: Vec<i32>| -> Option<i32> {
-        if v.is_empty() {
-            return None;
-        }
-        v.sort_unstable();
-        Some(v[v.len() / 2])
-    };
-    let rows = collect(true, w / 3);
-    let cols = collect(false, h / 3);
-    if rows.is_empty() || cols.is_empty() {
-        return None;
-    }
-    let row_centers: Vec<i32> = rows.iter().map(|(a, b)| (a + b) / 2).collect();
-    let row_lens: Vec<i32> = rows.iter().map(|(a, b)| b - a + 1).collect();
-    let col_centers: Vec<i32> = cols.iter().map(|(a, b)| (a + b) / 2).collect();
-    let col_lens: Vec<i32> = cols.iter().map(|(a, b)| b - a + 1).collect();
-    let cx = median(row_centers)?;
-    let half_w = median(row_lens)? / 2;
-    let cy = median(col_centers)?;
-    let half_h = median(col_lens)? / 2;
-    Some((
-        (cx - half_w).max(0),
-        (cx + half_w).min(w - 1),
-        (cy - half_h).max(0),
-        (cy + half_h).min(h - 1),
-    ))
-}

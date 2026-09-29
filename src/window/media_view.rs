@@ -54,9 +54,11 @@ mod imp {
         pub controls: Controls,
         pub caption: RefCell<String>,
         pub logged: Cell<bool>,
-        /// 缩放预览：目标**媒体**尺寸（0,0 = 无预览）
-        pub preview_w: Cell<i32>,
-        pub preview_h: Cell<i32>,
+        /// 几何调试日志去重键（frame+media 尺寸变了才记一条）
+        pub geo_logged: Cell<u64>,
+        /// 缩放预览：目标**上限盒**尺寸（0,0 = 不覆盖；缩放拖动时先预览盒）
+        pub preview_box_w: Cell<i32>,
+        pub preview_box_h: Cell<i32>,
         /// 拖动绘制偏移（只影响绘制，控件几何不动 → 事件坐标始终有效）
         pub offset_x: Cell<f64>,
         pub offset_y: Cell<f64>,
@@ -113,13 +115,18 @@ mod imp {
             let frame_rect = gtk::graphene::Rect::new(fx as f32, fy as f32, fw as f32, fh as f32);
             // 媒体绘制：若相框检测到内孔，裁剪到内孔（并外扩 MASK_FEATHER 藏边）
             let hole = self.inner_hole.get();
+            // 媒体绘制矩形就是内孔最大范围（geometry() 已算好），这里裁剪到它
+            let media_w = mw.max(1);
+            let media_h = mh.max(1);
             snapshot.save();
             if let Some(h) = hole {
                 let ins = MASK_INSET as f32;
-                let ix = (fx as f64 + fw as f64 * h.x0) as f32;
-                let iy = (fy as f64 + fh as f64 * h.y0) as f32;
-                let iw = (fw as f64 * h.width()) as f32;
-                let ih = (fh as f64 * h.height()) as f32;
+                let _ = h;
+                // 裁剪到媒体绘制矩形本身（= 内孔最大范围），异形部分由遮罩精确裁掉
+                let ix = mx as f32;
+                let iy = my as f32;
+                let iw = media_w as f32;
+                let ih = media_h as f32;
                 // 严格裁剪到内孔，并轻微内缩：硬边落在不透明环内，
                 // 而相框的半透明羽化带后面是桌面，不会透出图片。
                 let clip = gtk::graphene::Rect::new(
@@ -194,16 +201,6 @@ mod imp {
                 snapshot.append_texture(frame, &frame_rect);
             }
 
-            // 缩放预览虚线框
-            if self.preview_w.get() > 0 {
-                let cr = snapshot.append_cairo(&frame_rect);
-                cr.set_source_rgba(1.0, 1.0, 1.0, 0.6);
-                cr.set_line_width(1.5);
-                cr.set_dash(&[5.0, 4.0], 0.0);
-                cr.rectangle(0.75, 0.75, fw as f64 - 1.5, fh as f64 - 1.5);
-                let _ = cr.stroke();
-            }
-
             // 悬停控制层（以相框矩形为基准）
             let layout = ControlLayout::new(fw, fh);
             snapshot.save();
@@ -221,37 +218,104 @@ impl imp::MediaView {
     /// (相框 x,y,w,h, 媒体 x,y,w,h)，单位 px，控件（=屏幕）坐标
     #[allow(clippy::type_complexity)]
     pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
-        let (bw, bh) = (self.box_w.get().max(16), self.box_h.get().max(16));
+        // 缩放拖动时用预览盒（媒体尺寸已由"内孔几何"决定，拖动要改的是盒）
+        let (pw, ph) = (self.preview_box_w.get(), self.preview_box_h.get());
+        let (bw, bh) = if pw > 0 && ph > 0 {
+            (pw, ph)
+        } else {
+            (self.box_w.get().max(16), self.box_h.get().max(16))
+        };
 
         // ① 素材矩形：按素材比例在上限盒内取最大（换素材时尺寸随之变化）
-        let (sw, sh) = if self.preview_w.get() > 0 {
-            (self.preview_w.get().max(1), self.preview_h.get().max(1))
-        } else if let Some(t) = self.texture.borrow().as_ref() {
+        let (sw, sh) = if let Some(t) = self.texture.borrow().as_ref() {
             crate::geometry::fit(t.width().max(1), t.height().max(1), bw, bh)
         } else {
             (bw, bh)
         };
 
-        // ② 相框目标盒：以素材为中心外扩 grow（默认 5%）
+        // ② 相框目标盒：素材 × 外扩 grow（默认 5%）
+        //    grow 均匀放大素材与相框 → 相框内不会露出空隙
         let grow = 1.0 + self.frame_grow.get().clamp(0.0, 0.5);
-        let box_fw = ((sw as f64) * grow).round().max(1.0) as i32;
-        let box_fh = ((sh as f64) * grow).round().max(1.0) as i32;
-        let cx = self.frame_x.get() as f64 + sw as f64 / 2.0;
-        let cy = self.frame_y.get() as f64 + sh as f64 / 2.0;
-
-        // ③ 相框矩形：按 **PNG 自身比例** fit 进目标盒
-        //    → 宽高随素材自适应，且保持 PNG 比例不被拉伸
+        let gsw = ((sw as f64) * grow).round().max(1.0) as i32;
+        let gsh = ((sh as f64) * grow).round().max(1.0) as i32;
         let aspect = self.frame_aspect.get();
-        let (fw, fh) = if aspect > 0.01 {
-            crate::geometry::fit((aspect * 10_000.0).round() as i32, 10_000, box_fw, box_fh)
-        } else {
-            (box_fw, box_fh)
-        };
-        let fx = (cx - fw as f64 / 2.0).round() as i32;
-        let fy = (cy - fh as f64 / 2.0).round() as i32;
+        // 内孔可用区 = 整片透明区域的**最大宽高范围**（不规则形状交给遮罩裁剪）
+        let fit = self.inner_hole.get().map(|h| crate::geometry::HoleFit {
+            x0: h.x0,
+            y0: h.y0,
+            x1: h.x1,
+            y1: h.y1,
+        });
 
-        // ④ 素材：在相框内居中放置（含显示比）→ 与相框中心恒等
-        let (mx, my, mw, mh) = crate::geometry::place_media(fx, fy, fw, fh, sw, sh, self.media_zoom.get());
+        // ③ 相框尺寸
+        //    有内孔：只由"内孔绘制矩形 + 用户上限盒"决定（与素材比例无关 → 换图不跳变）
+        let (mut fw, mut fh) = match fit {
+            Some(f) => crate::geometry::frame_size_for_box(
+                f,
+                aspect,
+                bw as f64 * grow,
+                bh as f64 * grow,
+            ),
+            // 叠图模式（无内孔）：按 PNG 比例 fit 进"素材 × 外扩"目标盒
+            None if aspect > 0.01 => crate::geometry::fit(
+                (aspect * 10_000.0).round() as i32,
+                10_000,
+                gsw,
+                gsh,
+            ),
+            None => (gsw, gsh),
+        };
+        // 相框不能比整块 surface 还大（否则被裁掉一半）：按 PNG 比例缩到刚好装下
+        let (sfw, sfh) = (self.surf_w.get().max(16), self.surf_h.get().max(16));
+        if fw > sfw || fh > sfh {
+            let (cw, ch) = if aspect > 0.01 {
+                crate::geometry::fit(
+                    (aspect * 10_000.0).round() as i32,
+                    10_000,
+                    sfw,
+                    sfh,
+                )
+            } else {
+                (sfw, sfh)
+            };
+            fw = cw;
+            fh = ch;
+        }
+        // 相框左上角 = 配置里的 window.x/y
+        //    （拖动、停靠、输入区域、可见性判定都以"相框左上角"为准，这里必须一致；
+        //      之前把 x/y 当素材左上角再居中，相框一大就整体偏出屏幕）
+        let fx = crate::geometry::clamp(self.frame_x.get(), 0, (sfw - fw).max(0));
+        let fy = crate::geometry::clamp(self.frame_y.get(), 0, (sfh - fh).max(0));
+
+        // ④ 素材矩形：内孔可用区 × 显示比（1.0 = 铺满内孔，不裁切素材）
+        let (mx, my, mw, mh) = match fit {
+            Some(f) => crate::geometry::media_rect_in_hole(
+                fx,
+                fy,
+                fw,
+                fh,
+                f,
+                self.media_zoom.get(),
+            ),
+            // 叠图模式：居中放置（与旧版行为一致）
+            None => crate::geometry::place_media(fx, fy, fw, fh, sw, sh, self.media_zoom.get()),
+        };
+        // 几何变化时记一条调试日志（尺寸不变就不记，避免每帧刷屏）
+        let key = ((fw as u64) << 48)
+            | ((fh as u64) << 32)
+            | ((mw as u64) << 16)
+            | (mh as u64);
+        if self.geo_logged.replace(key) != key {
+            crate::debug!(
+                "几何：素材 {sw}x{sh} → 相框 {fw}x{fh} @({fx},{fy})，媒体 {mw}x{mh} @({mx},{my})，内孔 {:?}",
+                fit.map(|f| (
+                    (f.x0 * 1000.0).round() / 1000.0,
+                    (f.y0 * 1000.0).round() / 1000.0,
+                    (f.x1 * 1000.0).round() / 1000.0,
+                    (f.y1 * 1000.0).round() / 1000.0,
+                ))
+            );
+        }
         (fx, fy, fw, fh, mx, my, mw, mh)
     }
 }
@@ -481,6 +545,11 @@ impl MediaView {
         (fw, fh)
     }
 
+    /// 完整几何（相框矩形 + 媒体矩形）——给解码尺寸等外部逻辑用
+    pub fn media_geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
+        self.imp().geometry()
+    }
+
     /// 媒体尺寸（相框内实际显示的照片大小）
     pub fn media_size(&self) -> (i32, i32) {
         let (.., mw, mh) = self.imp().geometry();
@@ -566,6 +635,12 @@ impl MediaView {
     }
 
     /// PNG 相框（同时给出内孔遮罩；None 内孔 = 叠图模式）
+    /// 缩放拖动预览：临时改上限盒（松手才写配置）
+    pub fn set_preview_box(&self, w: i32, h: i32) {
+        self.imp().preview_box_w.set(w.max(0));
+        self.imp().preview_box_h.set(h.max(0));
+    }
+
     pub fn set_frame_texture_with_hole(
         &self,
         texture: Option<gdk::Texture>,
@@ -573,18 +648,6 @@ impl MediaView {
     ) {
         self.imp().inner_hole.set(hole);
         *self.imp().frame.borrow_mut() = texture;
-        self.queue_draw();
-    }
-
-    /// 缩放预览：目标**媒体**尺寸（0,0 = 结束预览）
-    pub fn set_preview_size(&self, w: i32, h: i32) {
-        let (w, h) = (w.max(0), h.max(0));
-        let imp = self.imp();
-        if imp.preview_w.get() == w && imp.preview_h.get() == h {
-            return;
-        }
-        imp.preview_w.set(w);
-        imp.preview_h.set(h);
         self.queue_draw();
     }
 

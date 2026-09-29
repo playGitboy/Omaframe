@@ -231,12 +231,10 @@ impl MediaPlayer {
                     return;
                 }
                 if d.mode_is_resize {
-                    let (nw, nh) = (d.target_media_w, d.target_media_h);
-                    if nw > 0 && nh > 0 {
-                        let scale = window.view.media_scale().clamp(0.2, 1.0);
-                        let box_w = ((nw as f64) / scale).round() as i32;
-                        let box_h = ((nh as f64) / scale).round() as i32;
-                        window.view.set_preview_size(0, 0);
+                    // 预览期间 target_media_w/h 存的是**上限盒**尺寸，直接落盘
+                    let (box_w, box_h) = (d.target_media_w, d.target_media_h);
+                    if box_w > 0 && box_h > 0 {
+                        window.view.set_preview_box(0, 0);
                         window.set_box(box_w, box_h);
                         self.state.edit(|c| {
                             c.display.max_width = box_w;
@@ -300,23 +298,29 @@ impl MediaPlayer {
         } else {
             d.acc_y
         };
-        let scale = self
+        // 拖动改的是**上限盒**：媒体尺寸由"内孔几何"从盒推导出来。
+        // 为了手感不变（鼠标走多少、照片就变多少），把位移换算到盒宽上。
+        let (cur_box_w, cur_box_h) = self
             .state
             .window()
-            .map(|w| w.view.media_scale())
-            .unwrap_or(0.96)
-            .clamp(0.2, 1.0);
-        let (nw, nh) = crate::geometry::resize_target_media(
-            d.media_w,
-            d.aspect,
+            .map(|w| w.view.box_size())
+            .unwrap_or((d.media_w as i32, d.media_h as i32));
+        let cur_media_w = d.media_w as f64;
+        let nw = crate::geometry::resize_target_box(
+            cur_box_w as f64,
+            cur_media_w,
             delta,
-            d.screen_w * scale,
-            d.screen_h * scale,
-            crate::config::MIN_WIDTH as f64,
-            crate::config::MIN_HEIGHT as f64,
+            (d.screen_w as f64) * 2.0,
         );
+        // 盒高按同比例缩放（相框比例由 PNG 决定，高度会自己算出来）
+        let nh = if cur_box_w > 0 {
+            ((cur_box_h as f64) * (nw as f64 / cur_box_w as f64)).round() as i32
+        } else {
+            cur_box_h
+        }
+        .max(crate::config::MIN_HEIGHT as i32);
         if let Some(window) = self.state.window() {
-            window.view.set_preview_size(nw, nh);
+            window.view.set_preview_box(nw, nh);
         }
         let mut st = self.drag.borrow_mut();
         st.target_media_w = nw;
@@ -475,11 +479,19 @@ impl MediaPlayer {
             .as_ref()
             .map(monitor_scale)
             .unwrap_or(1.0);
-        // 与显示一致：媒体只占组件的 media_scale，所以也只需解码那么多像素
-        let bw = (mw as f64 * scale * media_scale).round() as i32;
-        let bh = (mh as f64 * scale * media_scale).round() as i32;
+        // 与显示一致：解码到"实际绘制矩形"的尺寸（内孔几何决定，可能比上限盒大/小）
+        let (mut bw, mut bh) = (mw as f64, mh as f64);
+        if let Some(w) = self.state.window() {
+            let (_, _, _, _, mw2, mh2, _, _) = w.view.media_geometry();
+            if mw2 > 0 && mh2 > 0 {
+                bw = mw2 as f64;
+                bh = mh2 as f64;
+            }
+        }
+        let bw = (bw * scale * media_scale).round().max(16.0) as i32;
+        let bh = (bh * scale * media_scale).round().max(16.0) as i32;
         let cap = max_px.min(bw.max(bh) * 2);
-        (bw.min(cap), bh.min(cap))
+        (bw.min(cap).max(16), bh.min(cap).max(16))
     }
 
     fn show_image(self: &Rc<Self>, item: &MediaItem) {
@@ -585,7 +597,7 @@ impl MediaPlayer {
                 crate::warn!("相框加载失败：{path}");
                 if let Some(w) = self.state.window() {
                     w.view.set_frame_texture_with_hole(None, None);
-                    w.set_frame_mask(None);
+                        w.set_frame_mask(None);
                 }
             }
         }
