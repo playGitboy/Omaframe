@@ -19,10 +19,10 @@ use crate::controls::{ControlLayout, Controls, HitZone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
-/// 媒体绘制区域相对内孔向外扩展的像素数：
-/// 让媒体的硬边被相框的**不透明环**压住 → 既无缝也无锯齿，
-/// 同时相框之外依然一个像素都不显示。
-const MASK_OVERLAP: f64 = 2.0;
+/// 媒体绘制区域相对内孔**内缩**的像素数。
+/// 不能外扩：相框边缘常带半透明羽化，外扩会让图片从羽化带透出来
+/// （用户报的"图片上边缘露出相框"）。内缩一点让硬边藏在不透明环内。
+const MASK_INSET: f64 = 1.0;
 
 type ClickHandler = Rc<dyn Fn(HitZone)>;
 type DragHandler = Rc<dyn Fn(crate::controls::DragPhase)>;
@@ -115,16 +115,18 @@ mod imp {
             let hole = self.inner_hole.get();
             snapshot.save();
             if let Some(h) = hole {
-                let grow = MASK_OVERLAP as f32;
+                let ins = MASK_INSET as f32;
                 let ix = (fx as f64 + fw as f64 * h.x0) as f32;
                 let iy = (fy as f64 + fh as f64 * h.y0) as f32;
                 let iw = (fw as f64 * h.width()) as f32;
                 let ih = (fh as f64 * h.height()) as f32;
+                // 严格裁剪到内孔，并轻微内缩：硬边落在不透明环内，
+                // 而相框的半透明羽化带后面是桌面，不会透出图片。
                 let clip = gtk::graphene::Rect::new(
-                    ix - grow,
-                    iy - grow,
-                    iw + grow * 2.0,
-                    ih + grow * 2.0,
+                    ix + ins,
+                    iy + ins,
+                    (iw - ins * 2.0).max(1.0),
+                    (ih - ins * 2.0).max(1.0),
                 );
                 snapshot.push_clip(&clip);
             }
@@ -172,6 +174,9 @@ mod imp {
                 let cr = snapshot.append_cairo(&frame_rect);
                 let _ = cr.save();
                 cr.set_operator(cairo::Operator::DestOut);
+                // 关键：遮罩是按"相框矩形尺寸"生成的，但 cairo 原点在 surface (0,0)。
+                // 必须先平移到相框位置再贴，否则会擦错区域，媒体从相框边缘漏出。
+                cr.translate(frame_rect.x() as f64, frame_rect.y() as f64);
                 let _ = cr.set_source_surface(mask, 0.0, 0.0);
                 cr.rectangle(
                     0.0,
