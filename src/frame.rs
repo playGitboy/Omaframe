@@ -263,8 +263,8 @@ pub fn build_hole_mask(pb: &gdk_pixbuf::Pixbuf) -> Option<HoleMask> {
         return None;
     }
 
-    // 3) 3×3 盒式模糊 → 边缘羽化
-    let soft = blur3x3(&allow, w as usize, h as usize);
+    // 3) **不做羽化**：外缘必须硬切，否则相框外会残留一圈半透明媒体。
+    //    视觉自然度靠"媒体向内多压一点、被相框不透明环压住"实现（见 MASK_OVERLAP）。
     let pb8 = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, w, h)?;
     let dstride = pb8.rowstride() as usize;
     {
@@ -272,29 +272,11 @@ pub fn build_hole_mask(pb: &gdk_pixbuf::Pixbuf) -> Option<HoleMask> {
         let dst = unsafe { pb8.pixels() };
         for y in 0..h as usize {
             for x in 0..w as usize {
-                dst[y * dstride + x] = soft[y * w as usize + x];
+                dst[y * dstride + x] = allow[y * w as usize + x];
             }
         }
     }
     Some(HoleMask { mask: pb8, hole })
-}
-
-fn blur3x3(src: &[u8], w: usize, h: usize) -> Vec<u8> {
-    let mut out = vec![0u8; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            let mut sum = 0u32;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let yy = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
-                    let xx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
-                    sum += src[yy * w + xx] as u32;
-                }
-            }
-            out[y * w + x] = (sum / 9) as u8;
-        }
-    }
-    out
 }
 
 #[cfg(test)]

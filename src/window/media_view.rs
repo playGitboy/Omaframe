@@ -19,8 +19,10 @@ use crate::controls::{ControlLayout, Controls, HitZone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
-/// 遮罩裁剪时向外多放一点像素：让裁剪硬边落在相框不透明环内 → 无锯齿
-const MASK_FEATHER: f64 = 1.5;
+/// 媒体绘制区域相对内孔向外扩展的像素数：
+/// 让媒体的硬边被相框的**不透明环**压住 → 既无缝也无锯齿，
+/// 同时相框之外依然一个像素都不显示。
+const MASK_OVERLAP: f64 = 2.0;
 
 type ClickHandler = Rc<dyn Fn(HitZone)>;
 type DragHandler = Rc<dyn Fn(crate::controls::DragPhase)>;
@@ -108,11 +110,11 @@ mod imp {
             let hole = self.inner_hole.get();
             snapshot.save();
             if let Some(h) = hole {
+                let grow = MASK_OVERLAP as f32;
                 let ix = (fx as f64 + fw as f64 * h.x0) as f32;
                 let iy = (fy as f64 + fh as f64 * h.y0) as f32;
                 let iw = (fw as f64 * h.width()) as f32;
                 let ih = (fh as f64 * h.height()) as f32;
-                let grow = MASK_FEATHER as f32;
                 let clip = gtk::graphene::Rect::new(
                     ix - grow,
                     iy - grow,
