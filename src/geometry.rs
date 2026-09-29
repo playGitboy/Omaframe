@@ -268,6 +268,23 @@ mod tests {
     }
 
     #[test]
+    fn frame_size_hugs_media_by_grow_percent() {
+        // 素材 490x276（16:9），grow 3% → 内孔最大范围应 ≈ 505x284
+        // 木纹内孔 0.828 x 0.846，PNG 比例 1.836
+        let draw = HoleFit { x0: 0.07, y0: 0.008, x1: 0.898, y1: 0.854 };
+        let (fw, fh) = frame_size_for_box(draw, 1346.0 / 733.0, 504.7, 284.3);
+        let iw = fw as f64 * draw.width();
+        let ih = fh as f64 * draw.height();
+        // 约束更紧的一边精确等于"素材×1.03"，另一边不超过它
+        assert!((iw - 504.7).abs() < 2.0, "内孔宽 {iw} 应≈505（素材×1.03，贴住）");
+        assert!(ih <= 284.3 + 1.0, "内孔高 {ih} 不应超过素材×1.03");
+        assert!(ih >= 284.3 * 0.95, "内孔高 {ih} 不该明显小于素材×1.03");
+        // 相框保持 PNG 自身比例
+        let ar = fw as f64 / fh as f64;
+        assert!((ar - 1346.0 / 733.0).abs() < 0.02, "相框比例 {ar}");
+    }
+
+    #[test]
     fn frame_size_from_box_is_independent_of_media_aspect() {
         // 同一个内孔绘制矩形 + 同一个上限盒 → 无论素材横竖，相框都一样
         let draw = HoleFit { x0: 0.07, y0: 0.13, x1: 0.84, y1: 0.85 };

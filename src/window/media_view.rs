@@ -248,14 +248,10 @@ impl imp::MediaView {
         });
 
         // ③ 相框尺寸
-        //    有内孔：只由"内孔绘制矩形 + 用户上限盒"决定（与素材比例无关 → 换图不跳变）
+        //    有内孔：让"内孔最大范围"正好等于**素材 × (1+grow)**（默认 3%）
+        //    → 相框宽高随素材自适应（自适应素材比例与大小），且保持 PNG 自身比例
         let (mut fw, mut fh) = match fit {
-            Some(f) => crate::geometry::frame_size_for_box(
-                f,
-                aspect,
-                bw as f64 * grow,
-                bh as f64 * grow,
-            ),
+            Some(f) => crate::geometry::frame_size_for_box(f, aspect, gsw as f64, gsh as f64),
             // 叠图模式（无内孔）：按 PNG 比例 fit 进"素材 × 外扩"目标盒
             None if aspect > 0.01 => crate::geometry::fit(
                 (aspect * 10_000.0).round() as i32,
@@ -297,8 +293,11 @@ impl imp::MediaView {
                 f,
                 self.media_zoom.get(),
             ),
-            // 叠图模式：居中放置（与旧版行为一致）
-            None => crate::geometry::place_media(fx, fy, fw, fh, sw, sh, self.media_zoom.get()),
+            // 叠图模式：把素材再 fit 进相框后居中（**不能**直接按上限盒放，否则会溢出相框）
+            None => {
+                let (iw, ih) = crate::geometry::fit(sw, sh, fw, fh);
+                crate::geometry::place_media(fx, fy, fw, fh, iw, ih, self.media_zoom.get())
+            }
         };
         // 几何变化时记一条调试日志（尺寸不变就不记，避免每帧刷屏）
         let key = ((fw as u64) << 48)

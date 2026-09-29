@@ -383,24 +383,25 @@ impl MediaPlayer {
             crate::debug!("无视频后端，跳过 {}", item.file_name());
             return;
         };
-        let (max_w, max_h, autoplay, media_scale, connector) = {
+        let (max_w, max_h, autoplay, grow, connector) = {
             let cfg = self.state.config.borrow();
             (
                 cfg.display.max_width,
                 cfg.display.max_height,
                 cfg.video.autoplay,
-                cfg.display.media_scale,
+                cfg.frame.grow_percent.min(50),
                 cfg.window.monitor.clone(),
             )
         };
         // 视频必须按**设备像素**解码：显示器有缩放（如 1.25x / HiDPI），
         // 只按逻辑像素出帧会被合成器再放大 → 模糊。
-        // 这里与图片路径（decode_box）保持一致：逻辑尺寸 × media_scale × 屏幕缩放。
+        // 这里与图片路径（decode_box）保持一致：上限盒 × (1+grow) × 屏幕缩放。
+        // 不要乘废弃的 media_scale（会让出帧比绘制小 4% → 合成器放大 → 视频发糊）。
         let screen_scale = crate::window::target_monitor(&connector)
             .as_ref()
             .map(monitor_scale)
             .unwrap_or(1.0);
-        let k = media_scale * screen_scale;
+        let k = (1.0 + grow as f64 / 100.0) * screen_scale * 1.06;
         player.set_box(
             (max_w as f64 * k).round() as i32,
             (max_h as f64 * k).round() as i32,
@@ -464,32 +465,30 @@ impl MediaPlayer {
     }
 
     /// 解码目标盒：逻辑尺寸 × 屏幕缩放（HiDPI 下更清晰），上限由配置兜底
+    /// 图片解码尺寸（设备像素）。按"上限盒 × (1+grow)"当上界 → 永不上采样（上采样 = 糊）。
     fn decode_box(&self) -> (i32, i32) {
-        let (mw, mh, max_px, connector, media_scale) = {
+        let (mw, mh, grow, max_px, connector) = {
             let cfg = self.state.config.borrow();
             (
                 cfg.display.max_width,
                 cfg.display.max_height,
+                cfg.frame.grow_percent.min(50),
                 cfg.display.max_decode_px,
                 cfg.window.monitor.clone(),
-                cfg.display.media_scale,
             )
         };
+        let k = 1.0 + grow as f64 / 100.0;
         let scale = crate::window::target_monitor(&connector)
             .as_ref()
             .map(monitor_scale)
             .unwrap_or(1.0);
-        // 与显示一致：解码到"实际绘制矩形"的尺寸（内孔几何决定，可能比上限盒大/小）
-        let (mut bw, mut bh) = (mw as f64, mh as f64);
-        if let Some(w) = self.state.window() {
-            let (_, _, _, _, mw2, mh2, _, _) = w.view.media_geometry();
-            if mw2 > 0 && mh2 > 0 {
-                bw = mw2 as f64;
-                bh = mh2 as f64;
-            }
-        }
-        let bw = (bw * scale * media_scale).round().max(16.0) as i32;
-        let bh = (bh * scale * media_scale).round().max(16.0) as i32;
+        // **解码按设备像素、且必定覆盖实际绘制矩形**：
+        // 实际绘制矩形 = 内孔最大范围 ≤ 上限盒 × (1+grow)，按这个上界解码就永不上采样。
+        // 关键：**不要再乘废弃的 media_scale(0.96)** —— 那会让解码比绘制小 4%，
+        // 合成器把这个 4% 放大回来 → 图片发糊（用户报的"加载图片模糊"）。
+        // 1.06 是 cover 裁切余量。
+        let bw = (mw as f64 * k * scale * 1.06).round().max(16.0) as i32;
+        let bh = (mh as f64 * k * scale * 1.06).round().max(16.0) as i32;
         let cap = max_px.min(bw.max(bh) * 2);
         (bw.min(cap).max(16), bh.min(cap).max(16))
     }

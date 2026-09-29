@@ -213,7 +213,7 @@ impl Default for FrameConfig {
             desktop_enabled: true,
             style: String::new(),
             zoom: 100,
-            grow_percent: 5,
+            grow_percent: 3,
             debug_hud: false,
             path: String::new(),
         }
