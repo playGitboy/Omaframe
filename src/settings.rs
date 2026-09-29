@@ -90,17 +90,17 @@ const COMPACT_CSS: &str = "\
 window.photo-frame-settings { background-color: @theme_bg_color; }\
 preferences-page { background-color: transparent; }\
 preferences-page > scrolledwindow > viewport { margin: 0; padding: 0; }\
-preferences-group { margin-top: 6px; margin-bottom: 6px; }\
+preferences-group { margin-top: 4px; margin-bottom: 4px; }\
 preferences-group > box { margin-top: 0; margin-bottom: 0; }\
-preferences-group label.heading { font-size: 0.86em; font-weight: bold; margin-top: 2px; margin-bottom: 1px; }\
+preferences-group label.heading { font-size: 0.82em; font-weight: bold; margin-top: 0; margin-bottom: 0; }\
 preferences-group label.description { font-size: 0.76em; margin-top: 0; margin-bottom: 2px; }\
-row, row.entry, row.spin, row.switch, row.combo { min-height: 30px; padding-top: 0; padding-bottom: 0; }\
+row, row.entry, row.spin, row.switch, row.combo { min-height: 26px; padding-top: 0; padding-bottom: 0; }\
 row label.title, row label.subtitle { margin-top: 0; margin-bottom: 0; }\
-row label.title { font-size: 0.88em; }\
-row label.subtitle { font-size: 0.76em; }\
-entry, spinbutton, spinbutton button { min-height: 24px; font-size: 0.85em; }\
+row label.title { font-size: 0.84em; }\
+row label.subtitle { font-size: 0.72em; }\
+entry, spinbutton, spinbutton button { min-height: 22px; font-size: 0.82em; }\
 entry { padding-left: 6px; padding-right: 6px; }\
-switch { min-height: 24px; min-width: 42px; }\
+switch { min-height: 22px; min-width: 38px; }\
 button.flat { min-height: 24px; min-width: 24px; padding: 0; }\
 ";
 
@@ -120,13 +120,14 @@ fn apply_compact(win: &adw::ApplicationWindow) {
 pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
     let win = adw::ApplicationWindow::builder()
         .title("桌面相框设置")
-        .default_width(400)
-        .default_height(560)
+        .default_width(380)
+        .default_height(520)
         .build();
     // 固定尺寸 + 不可缩放：既保证紧凑，也让合成器把它当对话框浮动
     // （否则会被当普通窗口平铺，看起来又大又难用）
+    // 注意：set_size_request 设的是**最小**尺寸，别拿它当目标尺寸用
     win.set_resizable(false);
-    win.set_size_request(400, 560);
+    win.set_size_request(340, 360);
     apply_compact(&win);
 
     let page = adw::PreferencesPage::new();
@@ -444,6 +445,7 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
     }
     page.add(&g_pos);
 
+    // scrolledwindow 不把内容自然尺寸当作窗口尺寸 → 窗口可以保持紧凑
     win.set_content(Some(&page));
 
     // 关闭请求：隐藏窗口并清掉状态里的强引用。

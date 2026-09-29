@@ -327,6 +327,26 @@ mod tests {
     }
 
     #[test]
+    fn resize_handle_sits_at_frame_bottom_right() {
+        // 相框 500x300（几何重构后：相框按 PNG 自身比例，可能小于上限盒）
+        let l = ControlLayout::new(500, 300);
+        let (rx, ry, rw, rh) = l.resize_rect();
+        // 手柄在右下角，且尺寸合理（14~25px）
+        assert!(rx + rw <= 500.0 && ry + rh <= 300.0, "手柄越界: {rx},{ry},{rw},{rh}");
+        assert!(rw >= 14.0 && rw <= 34.0, "手柄尺寸不合理: {rw}");
+        // 命中点在手柄内
+        let hx = rx + rw / 2.0;
+        let hy = ry + rh / 2.0;
+        assert_eq!(l.hit(hx, hy), HitZone::Resize);
+        assert_eq!(l.drag_mode_at(hx, hy), Some(DragMode::Resize));
+        // 中心区域是 Move（不是 Resize）
+        assert_eq!(l.drag_mode_at(250.0, 150.0), Some(DragMode::Move));
+        // 播放/暂停按钮上不启动拖动
+        let (px, py, pw, ph) = l.play_rect();
+        assert_eq!(l.drag_mode_at(px + pw / 2.0, py + ph / 2.0), None);
+    }
+
+    #[test]
     fn drag_handles_ignore_half_zones() {
         let l = ControlLayout::new(600, 338);
         // 左右半区是"切图热区"，但仍然可以拖动移动
