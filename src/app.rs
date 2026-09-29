@@ -286,7 +286,7 @@ pub fn run(args: &[String]) -> Result<u8, String> {
         let st = state.clone();
         if let Some(tray) = crate::tray::Tray::new(
             "emblem-photos-symbolic",
-            "桌面相框 · 点击打开设置",
+            "桌面相框 · 点击开关设置面板",
             move || crate::settings::toggle(&st),
         ) {
             *state.tray.borrow_mut() = Some(tray);
