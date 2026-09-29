@@ -204,6 +204,22 @@ mod tests {
     }
 
     #[test]
+    fn frame_fits_media_grown_box() {
+        // 素材 500x300，grow=5% → 目标盒 525x315
+        let sw: f64 = 500.0;
+        let sh: f64 = 300.0;
+        let (box_w, box_h) = (525, 315);
+        // PNG 比例与素材一致 → 相框就是目标盒
+        let png: f64 = sw / sh;
+        let (fw, fh) = fit((png * 10_000.0).round() as i32, 10_000, box_w, box_h);
+        assert_eq!((fw, fh), (525, 315));
+        // PNG 是竖图（0.5）→ 保持比例：宽若取 525 则高 1050 超盒 → 改为按高 fit
+        let (fw2, fh2) = fit(5_000, 10_000, 525, 315);
+        assert_eq!((fw2, fh2), (158, 315)); // 158/315 ≈ 0.5
+        assert!(fw2 <= 525 && fh2 <= 315);
+    }
+
+    #[test]
     fn top_left_is_the_default_anchor() {
         let s = Bounds {
             width: 1536,

@@ -218,26 +218,35 @@ impl imp::MediaView {
     pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
         let (bw, bh) = (self.box_w.get().max(16), self.box_h.get().max(16));
 
-        // 相框矩形：按 **PNG 自身比例**在上限盒内取最大（不拉伸），与素材共享同一中心
-        let aspect = self.frame_aspect.get();
-        let (fw, fh) = if aspect > 0.01 {
-            crate::geometry::fit((aspect * 1000.0).round() as i32, 1000, bw, bh)
-        } else {
-            (bw, bh)
-        };
-        let fx = self.frame_x.get();
-        let fy = self.frame_y.get();
-
-        // 素材：在相框内按自身比例 fit，再以相框中心按显示比缩放 → 始终中心对齐
+        // ① 素材矩形：按素材比例在上限盒内取最大（换素材时尺寸随之变化）
         let (sw, sh) = if self.preview_w.get() > 0 {
             (self.preview_w.get().max(1), self.preview_h.get().max(1))
         } else if let Some(t) = self.texture.borrow().as_ref() {
-            crate::geometry::fit(t.width().max(1), t.height().max(1), fw, fh)
+            crate::geometry::fit(t.width().max(1), t.height().max(1), bw, bh)
         } else {
-            (fw, fh)
+            (bw, bh)
         };
-        let (mx, my, mw, mh) =
-            crate::geometry::place_media(fx, fy, fw, fh, sw, sh, self.media_zoom.get());
+
+        // ② 相框目标盒：以素材为中心外扩 grow（默认 5%）
+        let grow = 1.0 + self.frame_grow.get().clamp(0.0, 0.5);
+        let box_fw = ((sw as f64) * grow).round().max(1.0) as i32;
+        let box_fh = ((sh as f64) * grow).round().max(1.0) as i32;
+        let cx = self.frame_x.get() as f64 + sw as f64 / 2.0;
+        let cy = self.frame_y.get() as f64 + sh as f64 / 2.0;
+
+        // ③ 相框矩形：按 **PNG 自身比例** fit 进目标盒
+        //    → 宽高随素材自适应，且保持 PNG 比例不被拉伸
+        let aspect = self.frame_aspect.get();
+        let (fw, fh) = if aspect > 0.01 {
+            crate::geometry::fit((aspect * 10_000.0).round() as i32, 10_000, box_fw, box_fh)
+        } else {
+            (box_fw, box_fh)
+        };
+        let fx = (cx - fw as f64 / 2.0).round() as i32;
+        let fy = (cy - fh as f64 / 2.0).round() as i32;
+
+        // ④ 素材：在相框内居中放置（含显示比）→ 与相框中心恒等
+        let (mx, my, mw, mh) = crate::geometry::place_media(fx, fy, fw, fh, sw, sh, self.media_zoom.get());
         (fx, fy, fw, fh, mx, my, mw, mh)
     }
 }
