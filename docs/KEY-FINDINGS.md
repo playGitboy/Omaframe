@@ -250,3 +250,26 @@ coredumpctl list | grep photo-frame      # 崩溃自查（用户要求：主动�
 按下/拖动时输入区域会临时扩到整屏（为了拖出相框也不丢事件），此时指针移出相框
 **不会再收到 leave** → hover 冻结在"显示"。修法：每次 motion 都按**指针实际位置**判断
 （`ControlLayout::hit()` 落在框外返回 `None`，正好当判据）→ `set_hover(zone != None)`。
+
+## 三十、layer-shell 面板里开对话框：点"打开目录"闪退（2026-09-30）
+
+**现象**：设置面板点"媒体 → 打开"选目录，程序立刻闪退；`coredumpctl` **没有**新记录，
+日志最后一行是 `Gdk-Message: Lost connection to Wayland compositor`，
+Hyprland 侧报 `error in client communication (pid …)`。
+
+**根因**：`gtk::FileDialog::open(parent, …)` 把**设置面板**当对话框的 transient parent，
+而面板是 **layer-shell surface**（不是 `xdg_toplevel`）→ 触发 Wayland 协议错误 →
+**合成器直接踢掉客户端**（所以没有 coredump、不是 Rust 侧的 panic）。
+另外面板在 **Overlay 层且盖满屏幕**，普通 toplevel 的对话框会被它整个挡住。
+
+**修法**（`settings.rs` 的目录选择按钮）：
+1. `dialog.open(None::<&gtk::Window>, …)` —— **不传父窗口**（避免给 layer surface 设 parent）。
+2. 点按钮先 `hide(panel)`，对话框关闭（选中或取消）后再 `show(panel)`。
+3. 顺带加"刚显示 500ms 宽限期"（`within_show_grace`）：从对话框关掉回来时，
+   焦点正好切回原窗口，不该被 `activewindow` 事件当成"失去焦点"立刻把面板又关掉。
+
+**同类推广**：任何 `xdg_toplevel` 相关的父子/瞬态关系都不能挂到 layer-shell surface 上；
+需要模态/父窗口时，要么让对话框独立开，要么先把 layer surface 藏起来。
+
+**验证**：点"打开" → 对话框正常弹出且可见、程序不退出；点"取消" → 对话框关闭、
+面板回来并保持（不被焦点事件误关）、配置未被改动。

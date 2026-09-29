@@ -52,11 +52,33 @@ impl Panel {
     }
 }
 
+/// 刚显示面板的时刻：用于"宽限期"，避免刚弹出就被焦点事件又关掉
+static LAST_SHOW: std::sync::OnceLock<std::sync::Mutex<Option<std::time::Instant>>> =
+    std::sync::OnceLock::new();
+
+fn mark_shown() {
+    let slot = LAST_SHOW.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(mut g) = slot.lock() {
+        *g = Some(std::time::Instant::now());
+    }
+}
+
+/// 面板刚显示不足 `GRACE_MS` 毫秒 → 忽略"焦点变化"（例如从目录对话框关掉后回到面板）
+fn within_show_grace() -> bool {
+    const GRACE_MS: u128 = 500;
+    LAST_SHOW
+        .get()
+        .and_then(|s| s.lock().ok().and_then(|g| *g))
+        .map(|t| t.elapsed().as_millis() < GRACE_MS)
+        .unwrap_or(false)
+}
+
 /// 显示面板（已经开着就只把它抬到前面，不重建）
 pub fn show(state: &Rc<AppState>) {
     if let Some(p) = state.settings_window.borrow().as_ref() {
         if p.is_visible() {
             p.win.present();
+            mark_shown();
             return;
         }
     }
@@ -65,6 +87,7 @@ pub fn show(state: &Rc<AppState>) {
     panel.win.present();
     panel.win.grab_focus();
     *state.settings_window.borrow_mut() = Some(panel);
+    mark_shown();
     crate::debug!("设置面板 → 显示");
 }
 
@@ -94,7 +117,9 @@ pub fn hide_if_open(state: &Rc<AppState>, payload: &str) {
             .as_ref()
             .map(|p| p.is_visible())
             .unwrap_or(false);
-        if open && !payload.is_empty() {
+        // 刚弹出的一小段时间内忽略焦点事件：比如从目录对话框关掉后面板刚回来，
+        // 焦点正好切回原窗口，不该被当成"失去焦点"立刻关掉。
+        if open && !payload.is_empty() && !within_show_grace() {
             hide(state, "失去焦点（其它窗口/工作区）");
         }
     });
@@ -298,16 +323,21 @@ fn build(state: &Rc<AppState>) -> Panel {
     {
         let st = state.clone();
         let row_in = dir_row.clone();
-        let ww = win_weak.clone();
         dir_browse.connect_clicked(move |_| {
+            let st = st.clone();
+            let row2 = row_in.clone();
+            // 选目录对话框必须**独立开**，不能把设置面板当父窗口：
+            // ① 面板是 layer-shell surface（不是 xdg_toplevel），把它设成对话框的
+            //    transient parent 会触发协议错误 → 合成器直接踢掉我们的客户端
+            //    （现象：点"打开"就闪退，Hyprland 日志报 "error in client communication"）。
+            // ② 面板在 Overlay 层、盖满屏幕，会把普通 toplevel 的对话框整个挡住。
+            // 所以：先收起面板 → 以无父窗口方式打开对话框 → 结束后再把面板放回来。
+            hide(&st, "打开目录对话框");
             let dialog = gtk::FileDialog::builder()
                 .title("选择媒体目录")
                 .build();
-            let st = st.clone();
-            let row2 = row_in.clone();
-            let parent = ww.upgrade();
             dialog.open(
-                parent.as_ref(),
+                None::<&gtk::Window>,
                 gio::Cancellable::NONE,
                 move |res| {
                     if let Ok(folder) = res {
@@ -318,6 +348,8 @@ fn build(state: &Rc<AppState>) -> Panel {
                             refresh_media(&st);
                         }
                     }
+                    // 对话框关了就回到设置面板（配置已即时保存 ✓）
+                    show(&st);
                 },
             );
         });
