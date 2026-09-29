@@ -45,6 +45,7 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 | 切素材时窗口"退出又打开" | 换素材改 surface 尺寸 → 重建 | 画布恒定，媒体只改绘制 |
 | 视频加载前黑闪 | 切视频时先清纹理，首帧 0.2~0.5s 内 surface 无内容 | 保留上一项画面，首帧到达再替换 |
 | 托盘图标点击无反应 | quickshell 发 `Activate(ii)`（两个参数），只声明一个 → GDBus 以 InvalidArgs 拒绝 | XML 声明 `x,y` 两个 int；删掉指向空对象的 `Menu` 属性 |
+| 设置页 Esc 关不掉 | `EventControllerKey` 默认在 bubble 阶段，焦点在 Entry 里时按键先被输入框消费 | 改用 **capture 阶段**的 `EventControllerKey`（+bubble 兜底），焦点在输入框也能关窗 |
 | 位置停靠除居中外都偏 | 用**画布**尺寸贴靠，而相框在画布内居中 | 按**相框矩形**贴靠：`画布位置 = 期望相框位置 − 相框偏移` |
 | 改边距/位置后重启丢失 | `apply_anchor` 只 `edit()` 没 `commit()` | 末尾补 `commit()` |
 | 调试浮层开关无效 | 运行时没真增删 HUD | `set_debug()` 运行时创建/移除标签 |

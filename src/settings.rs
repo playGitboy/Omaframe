@@ -317,6 +317,22 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
 
     // ---------------- 位置 ----------------
     let g_pos = adw::PreferencesGroup::builder().title("位置与外观").build();
+    // 桌面显示：显示/隐藏桌面上的相框（媒体与设置照常工作）
+    {
+        let row = adw::SwitchRow::new();
+        row.set_title("在桌面显示相框");
+        row.set_subtitle("关闭后相框从桌面隐藏，媒体与设置不受影响");
+        row.set_active(state.config.borrow().frame.desktop_enabled);
+        let st = state.clone();
+        row.connect_active_notify(move |r| {
+            let v = r.is_active();
+            st.update(|c| c.frame.desktop_enabled = v);
+            if let Some(p) = st.player.borrow().as_ref() {
+                p.apply_desktop_visible();
+            }
+        });
+        g_pos.add(&row);
+    }
     let anchor = adw::ComboRow::builder()
         .title("默认位置")
         .model(&gtk::StringList::new(&[
@@ -371,23 +387,6 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
         });
         g_pos.add(&row);
     }
-    // 桌面显示：显示/隐藏桌面上的相框（媒体与设置照常工作）
-    {
-        let row = adw::SwitchRow::new();
-        row.set_title("在桌面显示相框");
-        row.set_subtitle("关闭后相框从桌面隐藏，媒体与设置不受影响");
-        row.set_active(state.config.borrow().frame.desktop_enabled);
-        let st = state.clone();
-        row.connect_active_notify(move |r| {
-            let v = r.is_active();
-            st.update(|c| c.frame.desktop_enabled = v);
-            if let Some(p) = st.player.borrow().as_ref() {
-                p.apply_desktop_visible();
-            }
-        });
-        g_frame.add(&row);
-    }
-
     // 调试浮层：运行时即时显隐（不再依赖环境变量）
     {
         let row = adw::SwitchRow::new();
@@ -412,12 +411,15 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
 
     win.set_content(Some(&page));
 
-    // Esc 关闭（GTK 默认 Esc 只在有 popover/dialog 时生效，这里显式处理）
+    // Esc 关闭设置页。
+    // 用 **capture 阶段**的 EventControllerKey：按键会先送到窗口，再到焦点控件，
+    // 因此焦点落在 Entry（目录 / PNG 路径输入框）里时，Esc 也不会被输入框吞掉。
     {
-        let ctrl = gtk::EventControllerKey::new();
-        win.add_controller(ctrl.clone());
         let weak: glib::WeakRef<adw::ApplicationWindow> = glib::WeakRef::new();
         weak.set(Some(&win));
+        let ctrl = gtk::EventControllerKey::new();
+        ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        win.add_controller(ctrl.clone());
         ctrl.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
                 if let Some(w) = weak.upgrade() {
@@ -427,7 +429,23 @@ pub fn build(state: &Rc<AppState>) -> adw::ApplicationWindow {
             }
             glib::Propagation::Proceed
         });
+
+        // 兜底：bubble 阶段再来一次（个别控件仍可能吃掉 key 事件）
+        let ctrl2 = gtk::EventControllerKey::new();
+        win.add_controller(ctrl2.clone());
+        let weak2: glib::WeakRef<adw::ApplicationWindow> = glib::WeakRef::new();
+        weak2.set(Some(&win));
+        ctrl2.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                if let Some(w) = weak2.upgrade() {
+                    w.close();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
     }
+
     win
 }
 
