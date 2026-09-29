@@ -329,6 +329,18 @@ impl MediaView {
         view.imp().media_zoom.set(1.0);
         view.imp().frame_grow.set(0.05); // 相框默认比素材大 5%
         view.add_css_class("photo-frame-view");
+        // 控制层淡入淡出必须自己请求重绘：GTK 不会因为 Cell 变化就重画。
+        // 少了这一句，动画只在"别的重绘顺便带上"时才可见，
+        // 光标停下后最后一帧（透明度=0）永远刷不出来 → 按钮留在屏幕上（用户报的 bug）。
+        {
+            let weak: glib::WeakRef<MediaView> = glib::WeakRef::new();
+            weak.set(Some(&view));
+            view.imp().controls.set_redraw_hook(move || {
+                if let Some(v) = weak.upgrade() {
+                    v.queue_draw();
+                }
+            });
+        }
         view.setup_gestures();
         view
     }
@@ -447,6 +459,13 @@ impl MediaView {
         let (fx, fy, fw, fh) = self.hit_rect_now();
         let layout = ControlLayout::new(fw as i32, fh as i32);
         let zone = layout.hit(x - fx, y - fy);
+        // 控制层显隐**以指针实际位置为准**（而不只靠 enter/leave）：
+        // 只要指针移出相框矩形就收起。
+        // 为什么必须这样：按下/拖动时输入区域会临时扩到整屏，此时指针移出相框
+        // 不会再收到 leave 事件，hover 会冻结在"显示" → 按钮一直挂着不收
+        // （用户报的"点击暂停后按钮一直显示"）。
+        // 落在框外时 hit() 返回 None，正好当判据。
+        self.imp().controls.set_hover(zone != HitZone::None);
         self.imp().controls.set_zone(zone);
         self.set_cursor_name(match zone {
             HitZone::Resize => Some("nwse-resize"),
@@ -467,6 +486,7 @@ impl MediaView {
 
     pub fn is_dragging(&self) -> bool {
         self.imp().dragging.get()
+
     }
 
     pub fn set_dragging(&self, on: bool) {
