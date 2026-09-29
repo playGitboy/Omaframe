@@ -40,7 +40,7 @@ PHOTO_FRAME_LOG=debug photo-frame   # 调试日志
 
 启动后会注册一个 **StatusNotifierItem** 托盘图标（图标名 `emblem-photos-symbolic`）：
 
-* **左键点击** = 开关设置**面板**（顶栏右下方弹出；再点一次 / Esc / 别的窗口拿到焦点 都会自动收起）
+* **左键点击** = 开关设置**面板**（顶栏右下方弹出；再点一次 / Esc / **点面板外** / 别的窗口拿到焦点 都会自动收起）
 * 没装托盘服务（`org.kde.StatusNotifierWatcher`）的桌面会自动跳过，只记日志，不影响相框
 
 ## 窗口架构（重要）

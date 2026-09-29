@@ -276,7 +276,9 @@ pub fn run(args: &[String]) -> Result<u8, String> {
 
                 // 弹出面板：别的窗口拿到焦点（或换工作区）就自动收起
                 let st_panel = app_state.clone();
-                crate::hypr::on_focus_change(move || crate::settings::hide_if_open(&st_panel));
+                crate::hypr::on_focus_change(move |payload| {
+                    crate::settings::hide_if_open(&st_panel, payload)
+                });
             }
         }
     });

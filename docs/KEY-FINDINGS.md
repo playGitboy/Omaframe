@@ -200,26 +200,35 @@ coredumpctl list | grep photo-frame      # 崩溃自查（用户要求：主动�
 
 ## 三点八、设置面板（弹出式，2026-09-29）
 
-需求：点状态栏图标弹出设置页；Esc 或**失去焦点**自动隐藏（Omarchy 插件那种手感）。
+需求：点状态栏图标弹出设置页；**点面板外 / Esc / 失去焦点**都自动隐藏（Omarchy 插件那种手感），
+且面板里的下拉、开关必须能用鼠标正常操作。
 
-实现（`settings.rs`）：
-1. 面板 = `adw::ApplicationWindow` + `layer_shell`：`Layer::Overlay`、锚 `Top|Right`、无标题栏、
-   `KeyboardMode::Exclusive`（Esc 与输入框都能用）、`set_default_size(360, min(可用高-12, 720))`。
-   → 不参与平铺、永远在普通窗口之上、不进 `hyprctl clients`。
-2. **状态栏图标点击 = 开关**（`tray` 回调 → `settings::toggle`）；`photo-frame settings` 走控制 socket（`toggle`）。
-3. Esc：capture 阶段 `EventControllerKey` → `close_request` → `hide()`（两条路径都验证过）。
-4. **失去焦点 = 别的窗口/工作区拿到焦点**：`hypr::on_focus_change()`（挂在已有的 Hyprland IPC 事件上，
-   匹配 `activewindow(v2)/openwindow/workspace(v2)/focusedmon`）→ `settings::hide_if_open()`。
-5. 隐藏即**销毁**窗口（`settings_window.take()`）：下次打开必然是最新配置，也不会残留 layer surface。
-6. CSS 只注册一次（面板用完即销毁再重建，每次注册会在 display 上累积 provider）。
+**最终形态（`settings.rs`）—— 只有一个窗口**：
+- 面板窗口铺满"顶栏以下"（`Layer::Overlay`、锚 `Top|Left`、`set_size_request(显示器尺寸)`、
+  `KeyboardMode::Exclusive`），左上锚定 + **显式尺寸**（不做四边拉伸）。
+- 面板卡片（固定宽 360 + 圆角 popover 背景 + 内部 ScrolledWindow）在窗口内对齐右上角。
+- **点卡片外 → 收起**：根容器 capture 阶段 `GestureClick`，用 `shell.compute_bounds()` 判断
+  落点是否在卡片内 → 在卡片外才 `hide()`。窗口铺满屏幕 → 点击被本窗口吞掉（真弹窗语义），
+  且顶栏（y<22）不在窗口内 → 状态栏图标仍可点（再点一次也能关）。
+- Esc → `close_request` → `hide()`；`photo-frame settings` / 托盘图标 → `toggle()`。
+- 隐藏即**销毁**窗口 → 下次打开必是最新配置（拖动改过的宽高立刻反映）。
+- 另一个窗口**真的**拿到焦点（Hyprland `activewindow(v2)` 事件，按负载去重）→ 也收起。
 
-踩过的坑（都很隐蔽，别重犯）：
-- **全透明的 layer surface 会被合成器当成不可见**：Hyprland `hyprctl layers` 里显示 `a: 0`，
-  并且**连输入一起跳过**。所以"透明遮罩盖住屏幕、点它关面板"这条路走不通：
-  即使给它画上内容（a 变 1）也拿不到点击 —— Hyprland 的输入命中顺序里，
-  覆盖该点的普通窗口会先拿到点击（实测点击落到终端，`activewindow` 不变化）。
-  → 结论：不要用遮罩做"点外面关闭"，用**焦点变化**驱动。
-- **点击"已经是活跃窗口"的窗口不会夺走面板键盘**（Exclusive layer surface 仍持有键盘）：
-  实测点完之后按 Esc 仍能关面板。所以"没自动关"不是 bug —— 那种情况下面板并没有失去焦点。
-- 四边锚定的 layer surface 由合成器拉伸，**GTK 侧不会收到 resize**，控件分配会停在最小值
-  （实测 1x1）。要拿真实尺寸得在分配之后读，或者干脆按显示器尺寸算。
+**踩过的坑（都很隐蔽，别重犯）**：
+1. **四边锚定的 layer surface 收不到鼠标事件**：合成器把这种 surface 拉伸，但 GTK 侧收不到
+   configure，控件分配停在最小值 → 无输入。（`hyprctl layers` 看得到、`a: 1`、输入区域也显式设了
+   —— 都没用。）同层同尺寸的**面板窗口**能收点击，区别就在"是否显式尺寸/非拉伸"。
+   → 结论：别用第二个"透明遮罩表面"做点外关闭，直接让面板窗口铺满屏幕。
+2. **不能用 `is_active_notify` 做"失去焦点就隐藏"**：面板里的下拉（AdwComboRow）打开时是 GTK 弹窗，
+   会让 toplevel 的 `is_active` 变 false → "点下拉面板立刻消失"（用户报的 bug）。
+3. **Hyprland 焦点事件只认 `activewindow(v2)`**：把 `workspace` 也算进来会误关面板
+   （点下拉时也会补发 workspace 事件）。另外事件按负载去重（同一窗口补发的事件不带变化）。
+4. **全透明的 layer surface 会被当成不可见**（`hyprctl layers` 里 `a: 0`）；现在面板根容器有一层
+   很淡的压暗（rgba 0.08），既是模态观感也保证 alpha>0。
+5. 面板内容比屏幕高 → 必须自己包一层 `ScrolledWindow`（`propagate_natural_height(false)`），
+   AdwPreferencesPage 单用会直接把高度报给窗口、被裁掉且滚不动。
+
+**托盘 SNI 顺带修的一个真 bug**：`ToolTip` 的签名必须是 `(sa(iiay)ss)`（图标名、图标像素数组、
+标题、描述）。之前写成 `(("photo-frame",), Vec<(i32,i32,i32,i32)>, tooltip)` —— 少一个字段、
+内层类型也不对，quickshell 每 30 秒报一次 DBus 签名错误刷日志。现在用
+`("photo-frame", Vec::<(i32,i32,Vec<u8>)>::new(), "桌面相框", tooltip)`。

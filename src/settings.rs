@@ -21,7 +21,22 @@ const PANEL_H_MAX: i32 = 720;
 /// 与顶栏 / 屏幕边缘的间隙
 const PANEL_GAP: i32 = 6;
 
-/// 弹出面板（layer-shell overlay 层的一个小窗）
+/// 显示器逻辑尺寸（取不到时给个保守值）
+fn monitor_size(state: &Rc<AppState>) -> (i32, i32) {
+    let connector = state.config.borrow().window.monitor.clone();
+    crate::window::target_monitor(&connector)
+        .as_ref()
+        .map(crate::window::monitor_bounds)
+        .map(|b| (b.width, b.height))
+        .unwrap_or((1920, 1080))
+}
+
+/// 弹出面板。
+///
+/// 形态：**一个**铺满"顶栏以下"的 overlay 窗口（= 遮罩 + 面板，不再用第二个 surface）。
+/// 面板卡片对齐到右上角，用坐标判断"点在卡片外"就收起。
+/// 为什么不用单独的透明遮罩表面：四边锚定被合成器拉伸的 surface 实测**收不到鼠标事件**
+/// （面板这种有正常尺寸协商的窗口能收到），见 docs/KEY-FINDINGS.md 3.8。
 pub struct Panel {
     win: adw::ApplicationWindow,
 }
@@ -62,17 +77,32 @@ pub fn hide(state: &Rc<AppState>, why: &str) {
     }
 }
 
-/// 只在面板开着时隐藏（给"失去焦点"回调调用，避免无谓日志）
-pub fn hide_if_open(state: &Rc<AppState>) {
-    let open = state
-        .settings_window
-        .borrow()
-        .as_ref()
-        .map(|p| p.is_visible())
-        .unwrap_or(false);
-    if open {
-        hide(state, "失去焦点（其它窗口/工作区）");
-    }
+/// 焦点事件处理：**别的窗口**（或工作区）拿到焦点时收起面板。
+///
+/// 按负载去重：Hyprland 在打开 GTK 弹窗（下拉列表）时也会补发 `activewindow`，
+/// 但负载里的窗口其实没变（同一个 class,title）→ 这种情况不该收面板。
+pub fn hide_if_open(state: &Rc<AppState>, payload: &str) {
+    LAST_FOCUS.with(|last| {
+        let changed = last.borrow().as_deref() != Some(payload);
+        *last.borrow_mut() = Some(payload.to_string());
+        if !changed {
+            return;
+        }
+        let open = state
+            .settings_window
+            .borrow()
+            .as_ref()
+            .map(|p| p.is_visible())
+            .unwrap_or(false);
+        if open && !payload.is_empty() {
+            hide(state, "失去焦点（其它窗口/工作区）");
+        }
+    });
+}
+
+thread_local! {
+    /// 上一次焦点事件负载（用于去重 Hyprland 补发的同值事件）
+    static LAST_FOCUS: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// 状态栏图标点击 = 开关
@@ -140,8 +170,11 @@ pub fn serve_control(state: Rc<AppState>) {
                 let n = s.read(&mut buf).unwrap_or(0);
                 let cmd = String::from_utf8_lossy(&buf[..n]).trim().to_string();
                 // 控制命令（供 `photo-frame settings`、快捷键绑定、测试脚本用）
+                // 语义要分清：show/hide 幂等，toggle 才是开关
+                // （`photo-frame settings` 发的是 "settings"，用开关语义）
                 let action: Option<fn(&Rc<AppState>)> = match cmd.as_str() {
-                    "settings" | "open" | "show" | "toggle" => Some(toggle),
+                    "settings" | "toggle" => Some(toggle),
+                    "show" | "open" => Some(show),
                     "hide" | "close" => Some(|st| hide(st, "控制命令")),
                     _ => None,
                 };
@@ -166,8 +199,10 @@ pub fn serve_control(state: Rc<AppState>) {
         .ok();
 }
 
-/// 紧凑样式 + 弹出面板外观（Adw 默认行高偏大，这里整体压缩）
+/// 紧凑样式 + 弹出面板外观（Adw 默认行高偏大，这里整体压缩）。
+/// 根容器兼作模态压暗：既保证 surface 不是全透明（合成器才不会跳过输入），也有遮罩观感。
 const PANEL_CSS: &str = "\
+.panel-backdrop { background-color: rgba(0, 0, 0, 0.08); background-image: none; }\
 window.photo-frame-panel, window.photo-frame-panel.background { background-color: transparent; background-image: none; box-shadow: none; border-style: none; }\
 .panel-shell { background-color: @popover_bg_color; border: 1px solid @borders; border-radius: 12px; box-shadow: 0 6px 18px alpha(black, 0.35); margin: 8px; }\
 preferences-page { background-color: transparent; }\
@@ -210,25 +245,19 @@ fn apply_theme() {
 fn build(state: &Rc<AppState>) -> Panel {
     apply_theme();
 
-    // ---------- 面板 ----------
+    // ---------- 面板：一个铺满"顶栏以下"的 overlay 窗口 ----------
+    let (mw, mh) = monitor_size(state);
+    // 面板卡片高度自适应：内容更高就滚动，屏幕小就跟着变小（不写死，兼容各种分辨率）
+    let panel_h = (mh - 22 - PANEL_GAP * 2).clamp(320, PANEL_H_MAX);
     let win = adw::ApplicationWindow::builder()
         .title("桌面相框设置")
         .build();
-    // 要的是"弹出面板"而不是窗口：无标题栏、固定宽度、不缩放
     win.set_decorated(false);
     win.set_resizable(false);
     win.add_css_class("photo-frame-panel");
-    // 高度自适应：内容比上限高就滚动，屏幕小就跟着变小（不写死，兼容各种分辨率）
-    let panel_h = {
-        let connector = state.config.borrow().window.monitor.clone();
-        crate::window::target_monitor(&connector)
-            .as_ref()
-            .map(crate::window::monitor_bounds)
-            .map(|b| b.height - PANEL_GAP * 2)
-            .unwrap_or(PANEL_H_MAX)
-            .clamp(320, PANEL_H_MAX)
-    };
-    win.set_default_size(PANEL_W, panel_h);
+    win.set_default_size(mw, mh);
+    // 窗口本身也要有最小尺寸：GTK 会按内容的自然尺寸缩小窗口，只有 default_size 不够
+    win.set_size_request(mw, mh);
     win.set_visible(false);
     win.init_layer_shell();
     win.set_layer(Layer::Overlay);
@@ -236,10 +265,16 @@ fn build(state: &Rc<AppState>) -> Panel {
     // 独占键盘：Esc 与输入框都能用；隐藏后 surface 不映射，不会抢键盘
     win.set_keyboard_mode(KeyboardMode::Exclusive);
     win.set_exclusive_zone(0);
+    // 左上锚定 + 显式尺寸（不做四边拉伸，否则 GTK 收不到 configure → 收不到鼠标事件）
     win.set_anchor(Edge::Top, true);
-    win.set_anchor(Edge::Right, true);
-    win.set_margin(Edge::Top, PANEL_GAP);
-    win.set_margin(Edge::Right, PANEL_GAP);
+    win.set_anchor(Edge::Left, true);
+
+    // 根容器 = 整片区域（很淡的模态压暗）；面板卡片对齐右上角
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.add_css_class("panel-backdrop");
+    root.set_size_request(mw, mh);
+    root.set_hexpand(true);
+    root.set_vexpand(true);
 
     let page = adw::PreferencesPage::new();
     page.set_title("相框");
@@ -553,13 +588,58 @@ fn build(state: &Rc<AppState>) -> Panel {
     }
     page.add(&g_pos);
 
-    // 外层容器负责圆角 + 背景（窗口自身透明，四角才不会露出方形底色）
+    // 面板卡片：圆角 + 背景 + 滚动
     let shell = gtk::Box::new(gtk::Orientation::Vertical, 0);
     shell.add_css_class("panel-shell");
-    // 固定宽度 + 内容自然高度（内容过高时由内部 scrolledwindow 滚动）
-    shell.set_size_request(PANEL_W, -1);
-    shell.append(&page);
-    win.set_content(Some(&shell));
+    shell.set_size_request(PANEL_W, panel_h);
+    shell.set_halign(gtk::Align::End);
+    shell.set_valign(gtk::Align::Start);
+    shell.set_margin_end(PANEL_GAP);
+    shell.set_margin_top(PANEL_GAP);
+    shell.set_vexpand(false);
+    // 关键：**必须自己包一层 ScrolledWindow**。AdwPreferencesPage 单用时会把内容的
+    // 自然高度（≈950px）报给窗口，窗口只有 720 → 直接被裁掉且滚不动，
+    // "相框样式/默认位置"这些在下面的行根本够不到。
+    // propagate_natural_height(false) 让 scrolledwindow 不把内容高度传上去，
+    // 窗口才能保持 720 并由它自己滚动。
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(false)
+        .vexpand(true)
+        .child(&page)
+        .build();
+    scroller.set_size_request(PANEL_W, -1);
+    shell.append(&scroller);
+    root.append(&shell);
+    win.set_content(Some(&root));
+
+    // 点卡片外 → 收起（坐标判断，避免"点卡片内空白处也关"）。
+    // 用 capture 阶段：先做"外面就关"的判断，再让卡片里的控件正常处理自己的点击。
+    {
+        let st = state.clone();
+        let shell_ref = shell.clone();
+        let press = gtk::GestureClick::new();
+        press.set_propagation_phase(gtk::PropagationPhase::Capture);
+        press.connect_pressed(move |gesture, _, x, y| {
+            let Some(widget) = gesture.widget() else {
+                return;
+            };
+            let inside = shell_ref
+                .compute_bounds(&widget)
+                .map(|b| {
+                    x >= b.x() as f64
+                        && y >= b.y() as f64
+                        && x <= (b.x() + b.width()) as f64
+                        && y <= (b.y() + b.height()) as f64
+                })
+                .unwrap_or(false);
+            if !inside {
+                hide(&st, "点面板外");
+            }
+        });
+        root.add_controller(press);
+    }
 
     // 关闭请求（Esc 走 close()）→ 隐藏并释放
     {
@@ -570,15 +650,10 @@ fn build(state: &Rc<AppState>) -> Panel {
         });
     }
 
-    // 失去焦点（例如合成器把焦点交给别的窗口）→ 自动隐藏，和弹出面板一致
-    {
-        let st = state.clone();
-        win.connect_is_active_notify(move |w| {
-            if w.is_visible() && !w.is_active() {
-                hide(&st, "失去焦点");
-            }
-        });
-    }
+    // 注意：这里**不要**用 `is_active_notify` 做"失去焦点就隐藏"。
+    // 面板里的下拉框（AdwComboRow）打开时是 GTK 弹窗，会让 toplevel 的 is_active 变 false，
+    // 于是"点下拉 → 面板立刻消失"（用户报的 bug）。
+    // 焦点变化统一走 Hyprland IPC 事件（见 hypr::on_focus_change），并按负载去重。
 
     // Esc 关闭设置页。
     // 用 **capture 阶段**的 EventControllerKey：按键会先送到窗口，再到焦点控件，

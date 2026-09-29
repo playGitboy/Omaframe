@@ -30,17 +30,13 @@ impl Rect {
     }
 }
 
-/// 焦点类事件：会影响覆盖关系，同时意味着"弹出面板该收起来了"
+/// "别的窗口拿到焦点"类事件 —— 弹出面板据此自动收起。
+///
+/// 只认 `activewindow(v2)`：**不要**把 `workspace` 之类也算进来 ——
+/// 点面板里的下拉框时 Hyprland 也可能补发 workspace 事件，会把面板误关掉
+/// （用户报的"点下拉就退出"）。"点在面板外"另有更可靠的坐标判定处理。
 fn is_focus_change(event: &str) -> bool {
-    matches!(
-        event,
-        "activewindow"
-            | "activewindowv2"
-            | "openwindow"
-            | "workspace"
-            | "workspacev2"
-            | "focusedmon"
-    )
+    matches!(event, "activewindow" | "activewindowv2")
 }
 
 /// 会影响覆盖关系的事件
@@ -104,7 +100,7 @@ impl VisibilityMonitor {
                 };
                 for line in BufReader::new(stream).lines() {
                     let Ok(line) = line else { break };
-                    let Some((ev, _payload)) = line.split_once(">>") else {
+                    let Some((ev, payload)) = line.split_once(">>") else {
                         continue;
                     };
                     if !is_relevant(ev) {
@@ -113,11 +109,13 @@ impl VisibilityMonitor {
                     crate::debug!("IPC 事件 {}", ev);
                     // 焦点类事件 → 通知弹出面板（"失去焦点就收起来"）
                     if is_focus_change(ev) {
+                        crate::debug!("IPC 焦点事件 {} |{}|", ev, payload);
                         let ctx2 = ctx.clone();
-                        ctx2.invoke(|| {
+                        let payload = payload.to_string();
+                        ctx2.invoke(move || {
                             FOCUS_CB.with(|slot| {
                                 if let Some(cb) = slot.borrow().as_ref() {
-                                    cb();
+                                    cb(&payload);
                                 }
                             });
                         });
@@ -222,13 +220,13 @@ impl VisibilityMonitor {
 // 主线程侧的 monitor（读线程通过 invoke 回调里取用）
 /// 注册"焦点变化"回调（主线程调用；替换式注册）。
 /// 弹出面板用它实现"失去焦点自动收起"（别的窗口激活 / 换工作区时触发）。
-pub fn on_focus_change(cb: impl Fn() + 'static) {
+pub fn on_focus_change(cb: impl Fn(&str) + 'static) {
     FOCUS_CB.with(|slot| *slot.borrow_mut() = Some(Rc::new(cb)));
 }
 
 thread_local! {
     /// 焦点变化回调（主线程）；弹出面板用它实现"失去焦点自动收起"
-    static FOCUS_CB: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+    static FOCUS_CB: RefCell<Option<Rc<dyn Fn(&str)>>> = const { RefCell::new(None) };
 
     static MONITOR: RefCell<Option<Rc<VisibilityMonitor>>> = const { RefCell::new(None) };
     static AVAILABLE: Cell<bool> = const { Cell::new(false) };

@@ -69,11 +69,18 @@ impl Tray {
                     "Id" => glib::Variant::from("photo-frame"),
                     "Title" => glib::Variant::from("桌面相框"),
                     "IconName" => glib::Variant::from(icon_name.clone()),
-                    "ToolTip" => glib::Variant::from((
-                        ("photo-frame",),
-                        Vec::<(i32, i32, i32, i32)>::new(),
-                        tooltip.clone(),
-                    )),
+                    // 签名必须是 (sa(iiay)ss)：图标名、图标像素数组 a(iiay)、标题、描述。
+                    // 之前写成 (("photo-frame",), Vec<(i32,i32,i32,i32)>, tooltip) →
+                    // 少一个字段且类型不对，quickshell 每 30 秒报一次 DBus 签名错误（刷日志）。
+                    "ToolTip" => {
+                        let pixmaps: Vec<(i32, i32, Vec<u8>)> = Vec::new();
+                        glib::Variant::from((
+                            "photo-frame",
+                            pixmaps,
+                            "桌面相框",
+                            tooltip.clone(),
+                        ))
+                    }
                     "ItemIsMenu" => glib::Variant::from(false),
                     _ => glib::Variant::from(""),
                 };
