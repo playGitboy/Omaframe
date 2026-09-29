@@ -559,6 +559,7 @@ impl MediaPlayer {
         }
         if path.is_empty() {
             if let Some(w) = self.state.window() {
+                w.view.set_frame_aspect(0.0);
                 w.view.set_frame_texture_with_hole(None, None);
                 w.set_frame_mask(None);
             }
@@ -570,6 +571,9 @@ impl MediaPlayer {
             .unwrap_or(1.0);
         match crate::frame::FrameRenderer::new(std::path::Path::new(&path), scale) {
             Some(r) => {
+                if let Some(w) = self.state.window() {
+                    w.view.set_frame_aspect(r.aspect());
+                }
                 *self.frame.borrow_mut() = Some(Rc::new(r));
                 self.refresh_frame();
             }

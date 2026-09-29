@@ -85,7 +85,12 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 - 配置：`frame.style = "木纹.png"`（**文件名**，不是绝对路径）；`frame.zoom = 0..100`（默认 100）。
   旧的 `frame.path` 会在 `Config::sanitize()` 里**自动迁移**成 `style`
   （`Loaded.migrated` 标记 → boot 立即落盘，不等退出）。
-- 显示比实现：`geometry::zoom_in_frame(fx,fy,fw,fh,zoom)` —— **以相框矩形中心为基准**缩放，
+- **中心对齐**：相框按 **PNG 自身比例**在上限盒内取最大（`fit(png_aspect, box)`，**不拉伸**），
+  素材 `fit(素材比例, 相框尺寸)` 后由 `geometry::place_media(fx,fy,fw,fh,mw,mh,zoom)`
+  以**相框中心**为基准放置/缩放 → 两者中心恒等（实测误差 0.5px = 整数取整残差）。
+  注意：很多相框的**内孔本身偏心**（电视TV/猫线/木纹/炫彩），所以"按孔位置放素材"会偏，
+  必须以**相框中心**为准。
+- 显示比实现：`geometry::place_media(...)`（`zoom_in_frame` 是同尺寸快捷版） —— **以相框矩形中心为基准**缩放，
   四周对称留边（单测断言 100%/70%/0% 三种情形下中心不变）。
 - 换样式/改显示比都是**立即生效**：`player.load_frame()` + `player.apply_zoom()`。
 

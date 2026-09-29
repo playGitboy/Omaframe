@@ -107,6 +107,14 @@ impl FrameRenderer {
         })
     }
 
+    /// 相框自身宽高比（用于"不拉伸地居中放置"）
+    pub fn aspect(&self) -> f64 {
+        match self.source.borrow().as_ref() {
+            Some(p) if p.height() > 0 => p.width() as f64 / p.height() as f64,
+            _ => 0.0,
+        }
+    }
+
     /// 内孔（相对比例）；None = 叠图模式
     pub fn inner_hole(&self) -> Option<InnerHole> {
         self.inner.get()

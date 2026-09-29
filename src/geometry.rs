@@ -59,7 +59,32 @@ pub fn resize_target_media(
     )
 }
 
-/// 素材显示比：以**相框矩形中心**为基准缩放（四周对称留边，不会偏向某一边）
+/// 素材在相框矩形内**居中**放置，并按显示比以相框中心缩放。
+/// 这是"PNG 相框与展示素材中心对齐"的唯一实现点。
+pub fn place_media(
+    fx: i32,
+    fy: i32,
+    fw: i32,
+    fh: i32,
+    mw: i32,
+    mh: i32,
+    zoom: f64,
+) -> (i32, i32, i32, i32) {
+    let z = if zoom.is_finite() { zoom.clamp(0.0, 1.0) } else { 1.0 };
+    let w = ((mw.max(1) as f64) * z).round().max(1.0) as i32;
+    let h = ((mh.max(1) as f64) * z).round().max(1.0) as i32;
+    let cx = fx as f64 + fw as f64 / 2.0;
+    let cy = fy as f64 + fh as f64 / 2.0;
+    (
+        (cx - w as f64 / 2.0).round() as i32,
+        (cy - h as f64 / 2.0).round() as i32,
+        w,
+        h,
+    )
+}
+
+/// 素材与相框同尺寸时的快捷版（缩放为中心基准）
+#[allow(dead_code)]
 pub fn zoom_in_frame(fx: i32, fy: i32, fw: i32, fh: i32, zoom: f64) -> (i32, i32, i32, i32) {
     let z = if zoom.is_finite() {
         zoom.clamp(0.0, 1.0)
@@ -162,6 +187,20 @@ mod tests {
         assert_eq!(y as f64 + h as f64 / 2.0, 350.0);
         // 0% 也要至少 1px，不崩
         assert_eq!(zoom_in_frame(0, 0, 400, 300, 0.0), (200, 150, 1, 1));
+    }
+
+    #[test]
+    fn media_is_centered_in_frame_even_if_aspect_differs() {
+        // 相框 400x200（很宽），素材 100x200（很窄）→ 素材应水平居中
+        let (x, y, w, h) = place_media(0, 0, 400, 200, 100, 200, 1.0);
+        assert_eq!((w, h), (100, 200));
+        assert_eq!((x, y), (150, 0));           // 水平居中
+        assert_eq!(x as f64 + w as f64 / 2.0, 200.0);
+        // 显示比 50%：仍以相框中心为基准
+        let (x, y, w, h) = place_media(100, 200, 400, 300, 400, 300, 0.5);
+        assert_eq!((w, h), (200, 150));
+        assert_eq!((x, y), (200, 275));
+        assert_eq!(x as f64 + w as f64 / 2.0, 300.0);
     }
 
     #[test]

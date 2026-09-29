@@ -43,8 +43,10 @@ mod imp {
         pub frame_y: Cell<i32>,
         /// 媒体内缩比例（已废弃：改用 PNG 内孔遮罩让位，此处恒为 1.0，仅为兼容旧配置）
         pub media_scale: Cell<f64>,
-        /// 素材显示比（0.0~1.0，1.0 = 铺满相框内孔），**以相框中心为基准缩放**
+        /// 素材显示比（0.0~1.0，1.0 = 铺满相框），**以相框中心为基准缩放**
         pub media_zoom: Cell<f64>,
+        /// 相框 PNG 自身宽高比（>0 时相框不拉伸，按比例居中）
+        pub frame_aspect: Cell<f64>,
         pub texture: RefCell<Option<gdk::Texture>>,
         pub frame: RefCell<Option<gdk::Texture>>,
         pub controls: Controls,
@@ -107,7 +109,6 @@ mod imp {
 
             let media_rect = gtk::graphene::Rect::new(mx as f32, my as f32, mw as f32, mh as f32);
             let frame_rect = gtk::graphene::Rect::new(fx as f32, fy as f32, fw as f32, fh as f32);
-
             // 媒体绘制：若相框检测到内孔，裁剪到内孔（并外扩 MASK_FEATHER 藏边）
             let hole = self.inner_hole.get();
             snapshot.save();
@@ -215,20 +216,26 @@ impl imp::MediaView {
     pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
         let (bw, bh) = (self.box_w.get().max(16), self.box_h.get().max(16));
 
-        // 相框矩形 = 满盒 fit（预览优先）。已撤销"按百分比缩放让位"，改由遮罩负责。
-        let (fw, fh) = if self.preview_w.get() > 0 {
-            (self.preview_w.get().max(1), self.preview_h.get().max(1))
-        } else if let Some(t) = self.texture.borrow().as_ref() {
-            crate::geometry::fit(t.width().max(1), t.height().max(1), bw, bh)
+        // 相框矩形：按 **PNG 自身比例**在上限盒内取最大（不拉伸），与素材共享同一中心
+        let aspect = self.frame_aspect.get();
+        let (fw, fh) = if aspect > 0.01 {
+            crate::geometry::fit((aspect * 1000.0).round() as i32, 1000, bw, bh)
         } else {
             (bw, bh)
         };
         let fx = self.frame_x.get();
         let fy = self.frame_y.get();
 
-        // 素材显示比：以**相框中心**为基准缩放
+        // 素材：在相框内按自身比例 fit，再以相框中心按显示比缩放 → 始终中心对齐
+        let (sw, sh) = if self.preview_w.get() > 0 {
+            (self.preview_w.get().max(1), self.preview_h.get().max(1))
+        } else if let Some(t) = self.texture.borrow().as_ref() {
+            crate::geometry::fit(t.width().max(1), t.height().max(1), fw, fh)
+        } else {
+            (fw, fh)
+        };
         let (mx, my, mw, mh) =
-            crate::geometry::zoom_in_frame(fx, fy, fw, fh, self.media_zoom.get());
+            crate::geometry::place_media(fx, fy, fw, fh, sw, sh, self.media_zoom.get());
         (fx, fy, fw, fh, mx, my, mw, mh)
     }
 }
@@ -465,6 +472,21 @@ impl MediaView {
 
     pub fn media_scale(&self) -> f64 {
         self.imp().media_scale.get()
+    }
+
+    /// 相框 PNG 自身宽高比（>0 时按比例居中，不拉伸）
+    pub fn set_frame_aspect(&self, aspect: f64) {
+        let a = if aspect.is_finite() && aspect > 0.0 {
+            aspect.clamp(0.1, 10.0)
+        } else {
+            0.0
+        };
+        if (self.imp().frame_aspect.get() - a).abs() < f64::EPSILON {
+            return;
+        }
+        self.imp().frame_aspect.set(a);
+        self.queue_resize();
+        self.queue_draw();
     }
 
     /// 素材显示比（0.0~1.0；<1 时以相框中心为基准缩小）
