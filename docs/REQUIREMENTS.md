@@ -1,4 +1,4 @@
-# photo-frame 需求与注意事项（汇总）
+# omaframe 需求与注意事项（汇总）
 
 > 本文是**需求清单 + 禁忌速查**；技术根因与推导细节在 [`KEY-FINDINGS.md`](KEY-FINDINGS.md)，实现计划在 [`PLAN.md`](PLAN.md)。
 > 改代码前先读本文的「禁忌」一节，能省掉大量重复排查。
@@ -17,7 +17,7 @@
 | F6 | 拖动移动相框 | 光标进入才显示控制层；拖动跟手不卡顿；松手才真正移动并保存 |
 | F7 | 右下角缩放 | 拖右下角改上限尺寸，保持比例，松手保存 |
 | F8 | 设置面板 | 点状态栏图标弹出；再点/ Esc / 点面板外 / 别的窗口获焦 → 收起；**每项改完立即生效并落盘** |
-| F9 | 登录自启 | `~/.config/autostart/photo-frame.desktop`，登录后自动运行 |
+| F9 | 登录自启 | `~/.config/autostart/omaframe.desktop`，登录后自动运行 |
 | F10 | 视频 | ffmpeg 解码；自动播放/静音/帧率上限可调；播完整段再切下一项 |
 | F11 | 清晰度 | 解码像素 **≥ 实际绘制像素**（永不上采样）；视频同；相框切片按**原始分辨率**保存、绘制时缩放 |
 | F15 | 手机素材 | HEIC/HEIF 照片可用（外部解码器回退）；MOV 按容器旋转矩阵正确显示为竖屏 |
@@ -85,19 +85,19 @@
 ## 五、本机环境约束（不要改、不要装）
 
 - 合成器：Hyprland（layer-shell 可用）；显示器：`HEADLESS-1`（scale_factor 报 2，物理 1.25×）+ HDMI 镜像
-- 配置与日志：`~/.config/omarchy-photo-frame/config.toml`、`~/.local/state/omarchy-photo-frame/logs/`
-- 相框库：`~/photo-frame/frame/*.png`（`frame/` 不进 git）
+- 配置与日志：`~/.config/omarchy-omaframe/config.toml`、`~/.local/state/omarchy-omaframe/logs/`
+- 相框库：`~/omaframe/frame/*.png`（`frame/` 不进 git）
 - 无 GStreamer 解码器；视频走系统 `ffmpeg`（与 `owe` 同一套）
 - 需要装包/改系统配置 → **先问用户**
 
 ## 六、常用命令
 
 ```bash
-cd ~/photo-frame
+cd ~/omaframe
 cargo build --release && cargo test          # 编译 + 22 个单测
 make install                                  # 装到 ~/.local/bin + 自启项
-pkill -x photo-frame; setsid nohup ~/.local/bin/photo-frame >/dev/null 2>&1 &   # 重启
-PHOTO_FRAME_LOG=debug ~/.local/bin/photo-frame 2>&1 | tail -50   # 带调试日志跑
-coredumpctl list photo-frame --no-pager | tail -3                # 崩溃自查
+pkill -x omaframe; setsid nohup ~/.local/bin/omaframe >/dev/null 2>&1 &   # 重启
+PHOTO_FRAME_LOG=debug ~/.local/bin/omaframe 2>&1 | tail -50   # 带调试日志跑
+coredumpctl list omaframe --no-pager | tail -3                # 崩溃自查
 scripts/rollback.sh v1.0.0                                        # 一键回滚
 ```

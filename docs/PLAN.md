@@ -1,6 +1,6 @@
 > 📌 **后期回顾先看 [`KEY-FINDINGS.md`](KEY-FINDINGS.md)**：已验证有效的修复点、症状→根因对照、语义约定与环境事实。
 
-# photo-frame — Omarchy 桌面电子相框 (V1)
+# omaframe — Omarchy 桌面电子相框 (V1)
 
 ## 0. 本机实测环境（Step 1 结论，勿凭旧资料假设）
 
@@ -67,7 +67,7 @@ fit(aspect, max_w, max_h) = (orig_w, orig_h) * min(max_w/orig_w, max_h/orig_h)
 ## 3. 目录结构
 
 ```
-photo-frame/
+omaframe/
 ├── Cargo.toml / Makefile / README.md / docs/PLAN.md
 └── src/
     ├── main.rs            # CLI: (无参)=运行  settings  --version  --help
@@ -144,7 +144,7 @@ UI 层只认 `MediaItem`，不认路径语义 → 将来 `SmbMediaSource` 等直
 8. ✅ 被窗口覆盖则暂停（Hyprland IPC 事件流；实测覆盖时 CPU 0.0%，恢复后 ~2%）
 9. ✅ 右下角 resize（保持比例、不可为 0、不超 max、不超屏幕）
 10. ✅ 拖动移动 + 位置/尺寸持久化（重启精确恢复）
-11. ✅ Adw 设置窗口（`photo-frame settings`，通过 `$XDG_RUNTIME_DIR` 控制 socket 通知已有实例）
+11. ✅ Adw 设置窗口（`omaframe settings`，通过 `$XDG_RUNTIME_DIR` 控制 socket 通知已有实例）
 12. ✅ `make install`：只写 `~/.local/bin` + `~/.config/autostart`（XDG 标准，零 root、零 hypr 改动）
 
 验收场景按用户清单 1~13 逐条实测。

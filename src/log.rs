@@ -60,7 +60,7 @@ pub fn init(state_dir: &std::path::Path, level: Level) {
     }
     match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(f) => file = Some(f),
-        Err(e) => eprintln!("photo-frame: 日志文件不可写（{}），仅输出到 stderr", e),
+        Err(e) => eprintln!("omaframe: 日志文件不可写（{}），仅输出到 stderr", e),
     }
 
     let _ = SINK.set(Mutex::new(Sink {

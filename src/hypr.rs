@@ -92,7 +92,7 @@ impl VisibilityMonitor {
 
         let ctx = glib::MainContext::default();
         std::thread::Builder::new()
-            .name("photo-frame-hypr".into())
+            .name("omaframe-hypr".into())
             .spawn(move || {
                 let Ok(stream) = UnixStream::connect(&path) else {
                     crate::warn!("无法连接 Hyprland IPC：{}", path.display());

@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=桌面相框 (Photo Frame)
+Name=Omaframe 智能相框
 Comment=在桌面上显示本地图片/视频相框
-Exec=/home/sen/.local/bin/photo-frame
+Exec=/home/sen/.local/bin/omaframe
 Icon=preferences-desktop-display
 Terminal=false
 # 桌面起来后稍等再启动：不与 Hyprland/omarchy 首屏争资源

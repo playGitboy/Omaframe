@@ -194,9 +194,9 @@ Omaframe — Omarchy 智能自适应 PNG 相框
 用法：
   omaframe                启动（桌面相框）
   omaframe settings   打开设置窗口（已有实例则通知它打开）
-  photo-frame quit       退出运行中的实例
-  photo-frame --help     显示帮助
-  photo-frame --version  显示版本
+  omaframe quit       退出运行中的实例
+  omaframe --help     显示帮助
+  omaframe --version  显示版本
 
 环境变量：
   PHOTO_FRAME_LOG=debug|info|warn|error   日志级别（默认 info）
@@ -210,7 +210,7 @@ pub fn run(args: &[String]) -> Result<u8, String> {
             return Ok(0);
         }
         Some("-v") | Some("--version") => {
-            println!("photo-frame {}", env!("CARGO_PKG_VERSION"));
+            println!("omaframe {}", env!("CARGO_PKG_VERSION"));
             return Ok(0);
         }
         Some(other) if other.starts_with('-') => {
@@ -222,7 +222,7 @@ pub fn run(args: &[String]) -> Result<u8, String> {
 
     let level = std::env::var("PHOTO_FRAME_LOG").unwrap_or_else(|_| "info".into());
     crate::log::init(&crate::config::state_dir(), crate::log::Level::parse(&level));
-    crate::info!("photo-frame {} 启动中…", env!("CARGO_PKG_VERSION"));
+    crate::info!("omaframe {} 启动中…", env!("CARGO_PKG_VERSION"));
 
     // 已有实例在跑 → 通知它开设置窗口，然后本进程退出
     let want_settings = args.iter().any(|a| a == "settings" || a == "--settings");

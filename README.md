@@ -1,4 +1,4 @@
-# photo-frame — Omarchy 桌面电子相框
+# Omaframe — Omarchy 桌面电子相框
 
 轻量、原生的桌面电子相框小组件：把本地目录里的图片/视频像相框一样摆在桌面上，
 不抢焦点、不参与平铺、永远在普通窗口之下，被窗口盖住时自动暂停以省电。
@@ -19,21 +19,21 @@ make install        # 只写用户目录，不需要 root，不修改 hypr/omarc
 
 | 位置 | 说明 |
 |---|---|
-| `~/.local/bin/photo-frame` | 主程序 |
-| `~/.config/autostart/photo-frame.desktop` | 登录自启（XDG 标准，延迟 4s，不拖慢桌面加载） |
+| `~/.local/bin/Omaframe` | 主程序 |
+| `~/.config/autostart/Omaframe.desktop` | 登录自启（XDG 标准，延迟 4s，不拖慢桌面加载） |
 | `frame/*.png` | **内置相框库**（相框样式下拉的选项来源） |
-| `~/.config/omarchy-photo-frame/config.toml` | 配置（首次启动自动生成） |
-| `~/.local/state/omarchy-photo-frame/logs/photo-frame.log` | 日志（自动轮转 1MB） |
+| `~/.config/omarchy-Omaframe/config.toml` | 配置（首次启动自动生成） |
+| `~/.local/state/omarchy-Omaframe/logs/Omaframe.log` | 日志（自动轮转 1MB） |
 
 卸载：`make uninstall`（保留配置）。
 
 ## 使用
 
 ```bash
-photo-frame            # 启动桌面相框
-photo-frame settings   # 打开设置面板（已有实例则通知它打开）
-photo-frame quit       # 退出运行中的实例
-PHOTO_FRAME_LOG=debug photo-frame   # 调试日志
+Omaframe            # 启动桌面相框
+Omaframe settings   # 打开设置面板（已有实例则通知它打开）
+Omaframe quit       # 退出运行中的实例
+PHOTO_FRAME_LOG=debug Omaframe   # 调试日志
 ```
 
 ## 状态栏图标
@@ -76,7 +76,7 @@ layer surface（固定 = 整块显示器，尺寸恒定、永不重建）
 
 ## 配置
 
-`~/.config/omarchy-photo-frame/config.toml`（原子写入：临时文件 + rename，损坏时自动备份并回退默认值）
+`~/.config/omarchy-Omaframe/config.toml`（原子写入：临时文件 + rename，损坏时自动备份并回退默认值）
 
 ```toml
 [source]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# photo-frame 一键版本回滚 / 切换
+# omaframe 一键版本回滚 / 切换
 # 用法:
 #   scripts/rollback.sh              列出可选版本
 #   scripts/rollback.sh <ref>        切到该版本（tag / 提交号 / 分支）并重新安装
@@ -41,4 +41,4 @@ git checkout "$REF" 2>&1 | tail -2
 echo "==> 重新构建并安装（约 1 分钟）"
 cargo build --release
 make install
-echo "==> 完成。现在运行 'photo-frame' 生效；回开发版用 scripts/rollback.sh latest"
+echo "==> 完成。现在运行 'omaframe' 生效；回开发版用 scripts/rollback.sh latest"

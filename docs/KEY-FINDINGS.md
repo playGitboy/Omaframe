@@ -1,7 +1,7 @@
-# photo-frame 关键结论速查（后期回顾用）
+# omaframe 关键结论速查（后期回顾用）
 
 > 更新时间：2026-09-28 · 对应提交 `572dbd6`
-> 源码 `~/photo-frame`，本文件只记录**已验证有效**的结论和踩过的坑，细节见 `docs/PLAN.md`。
+> 源码 `~/omaframe`，本文件只记录**已验证有效**的结论和踩过的坑，细节见 `docs/PLAN.md`。
 
 > 需求清单与禁忌速查见 [`REQUIREMENTS.md`](REQUIREMENTS.md)；本文只放技术根因与推导。
 
@@ -179,7 +179,7 @@ layer surface = 整个显示器（1536×864），尺寸恒定、永不重建
 ## 八、版本管理与一键回滚
 
 ```bash
-cd ~/photo-frame
+cd ~/omaframe
 make versions            # 列出可回滚的 tag / 提交
 scripts/rollback.sh v1.0.0   # 切到 V1 完成版并重新构建安装（含 make install）
 scripts/rollback.sh latest    # 切回最新提交（恢复开发中的版本）
@@ -190,14 +190,14 @@ scripts/rollback.sh latest    # 切回最新提交（恢复开发中的版本）
 ## 九、常用命令
 
 ```bash
-cd ~/photo-frame
+cd ~/omaframe
 make install / make uninstall          # 只写 ~/.local/bin 与 ~/.config/autostart
-~/.local/bin/photo-frame                # 启动
-~/.local/bin/photo-frame settings       # 设置（400×560 浮动窗口）
-~/.local/bin/photo-frame quit           # 退出
-PHOTO_FRAME_LOG=debug ~/.local/bin/photo-frame   # 调试日志
-grep -E "输入区域|Update" ~/.local/state/omarchy-photo-frame/logs/photo-frame.log -c
-coredumpctl list | grep photo-frame      # 崩溃自查（用户要求：主动盯崩溃并修）
+~/.local/bin/omaframe                # 启动
+~/.local/bin/omaframe settings       # 设置（400×560 浮动窗口）
+~/.local/bin/omaframe quit           # 退出
+PHOTO_FRAME_LOG=debug ~/.local/bin/omaframe   # 调试日志
+grep -E "输入区域|Update" ~/.local/state/omarchy-omaframe/logs/omaframe.log -c
+coredumpctl list | grep omaframe      # 崩溃自查（用户要求：主动盯崩溃并修）
 ```
 
 ## 三点八、设置面板（弹出式，2026-09-29）
@@ -212,7 +212,7 @@ coredumpctl list | grep photo-frame      # 崩溃自查（用户要求：主动�
 - **点卡片外 → 收起**：根容器 capture 阶段 `GestureClick`，用 `shell.compute_bounds()` 判断
   落点是否在卡片内 → 在卡片外才 `hide()`。窗口铺满屏幕 → 点击被本窗口吞掉（真弹窗语义），
   且顶栏（y<22）不在窗口内 → 状态栏图标仍可点（再点一次也能关）。
-- Esc → `close_request` → `hide()`；`photo-frame settings` / 托盘图标 → `toggle()`。
+- Esc → `close_request` → `hide()`；`omaframe settings` / 托盘图标 → `toggle()`。
 - 隐藏即**销毁**窗口 → 下次打开必是最新配置（拖动改过的宽高立刻反映）。
 - 另一个窗口**真的**拿到焦点（Hyprland `activewindow(v2)` 事件，按负载去重）→ 也收起。
 
@@ -231,9 +231,9 @@ coredumpctl list | grep photo-frame      # 崩溃自查（用户要求：主动�
    AdwPreferencesPage 单用会直接把高度报给窗口、被裁掉且滚不动。
 
 **托盘 SNI 顺带修的一个真 bug**：`ToolTip` 的签名必须是 `(sa(iiay)ss)`（图标名、图标像素数组、
-标题、描述）。之前写成 `(("photo-frame",), Vec<(i32,i32,i32,i32)>, tooltip)` —— 少一个字段、
+标题、描述）。之前写成 `(("omaframe",), Vec<(i32,i32,i32,i32)>, tooltip)` —— 少一个字段、
 内层类型也不对，quickshell 每 30 秒报一次 DBus 签名错误刷日志。现在用
-`("photo-frame", Vec::<(i32,i32,Vec<u8>)>::new(), "桌面相框", tooltip)`。
+`("omaframe", Vec::<(i32,i32,Vec<u8>)>::new(), "桌面相框", tooltip)`。
 
 ## 三点九、控制层（播放/暂停按钮）显隐的两个坑（2026-09-29）
 
@@ -345,7 +345,7 @@ PNG ──降采样(≤512px)──▶ Alpha 二值化 ──边界洪泛──�
 
 - 4096×2160 相框：降采样到 512×270 分析，**21ms**，几何映射误差 ≤4px
 - 1346×719 相框：**8ms**
-- 二次启动：**0 次分析**（`相框模型命中缓存`），缓存文件 `~/.cache/omarchy-photo-frame/frames/*.json`
+- 二次启动：**0 次分析**（`相框模型命中缓存`），缓存文件 `~/.cache/omarchy-omaframe/frames/*.json`
 - 播放中整机 CPU ≈5%；分析只在**相框加载时**发生一次，绝不在每帧做
 - `FrameSlices` 惰性构建一次并在内存里复用（换素材只重算布局，不重新分析）
 

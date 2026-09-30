@@ -1,4 +1,4 @@
-//! photo-frame — 轻量桌面电子相框（Omarchy / Wayland / Hyprland / GTK4）
+//! Omaframe — 智能自适应 PNG 相框（Omarchy / Wayland / Hyprland / GTK4）
 
 mod app;
 mod config;
@@ -22,7 +22,7 @@ fn main() -> ExitCode {
     match app::run(&args) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            eprintln!("photo-frame: {e}");
+            eprintln!("omaframe: {e}");
             ExitCode::from(1)
         }
     }

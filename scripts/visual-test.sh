@@ -11,15 +11,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${HOME}/.local/bin/photo-frame"
+BIN="${HOME}/.local/bin/omaframe"
 OUT="${ROOT}/target/visual"
-CFG="${HOME}/.config/omarchy-photo-frame/config.toml"
+CFG="${HOME}/.config/omarchy-omaframe/config.toml"
 MEDIA_ROOT="${PF_TEST_MEDIA:-/tmp/pfm}"
 FRAMES=("$@")
 [ ${#FRAMES[@]} -eq 0 ] && FRAMES=(横-木纹.png 横-花环.png 横-炫彩.png)
 
 # 相框名必须真实存在（相框库已被整理成 横-*/竖-* 两组）
-FRAME_DIR="${PF_FRAME_DIR:-$HOME/photo-frame/frame}"
+FRAME_DIR="${PF_FRAME_DIR:-$HOME/omaframe/frame}"
 for f in "${FRAMES[@]}"; do
   if [ ! -f "$FRAME_DIR/$f" ]; then
     echo "跳过不存在的相框：$FRAME_DIR/$f" >&2
@@ -41,7 +41,7 @@ gen_media s1x1  1200x1200 '#ffff00'
 gen_media u21x9 2520x1080 '#00ff88'
 
 restart() {
-  pkill -x photo-frame 2>/dev/null || true
+  pkill -x omaframe 2>/dev/null || true
   sleep 0.8
   PHOTO_FRAME_LOG=debug setsid nohup "$BIN" > /tmp/vt.log 2>&1 < /dev/null &
   sleep 3.5

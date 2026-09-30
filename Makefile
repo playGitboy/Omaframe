@@ -1,8 +1,8 @@
 PREFIX ?= $(HOME)/.local
 BINDIR := $(PREFIX)/bin
 AUTOSTART_DIR := $(HOME)/.config/autostart
-CONFIG_DIR := $(HOME)/.config/omarchy-photo-frame
-PKG := photo-frame
+CONFIG_DIR := $(HOME)/.config/omarchy-omaframe
+PKG := omaframe
 
 .PHONY: all build test install uninstall run clean fmt versions rollback
 
@@ -23,7 +23,7 @@ run: build
 ## 安装：只写用户目录，不需要 root，不改 hypr/omarchy 配置
 install: build
 	install -Dm755 target/release/$(PKG) $(BINDIR)/$(PKG)
-	install -Dm644 packaging/$(PKG).autostart.desktop $(AUTOSTART_DIR)/$(PKG).desktop
+	install -Dm644 packaging/omaframe.desktop $(AUTOSTART_DIR)/$(PKG).desktop
 	@echo "已安装："
 	@echo "  程序      $(BINDIR)/$(PKG)"
 	@echo "  登录自启  $(AUTOSTART_DIR)/$(PKG).desktop"

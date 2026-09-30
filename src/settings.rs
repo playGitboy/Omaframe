@@ -201,7 +201,7 @@ pub fn serve_control(state: Rc<AppState>) {
         return;
     };
     std::thread::Builder::new()
-        .name("photo-frame-ctl".into())
+        .name("omaframe-ctl".into())
         .spawn(move || {
             let ctx = glib::MainContext::default();
             for stream in listener.incoming() {
@@ -244,7 +244,7 @@ pub fn serve_control(state: Rc<AppState>) {
 /// 根容器兼作模态压暗：既保证 surface 不是全透明（合成器才不会跳过输入），也有遮罩观感。
 const PANEL_CSS: &str = "\
 .panel-backdrop { background-color: rgba(0, 0, 0, 0.08); background-image: none; }\
-window.photo-frame-panel, window.photo-frame-panel.background { background-color: transparent; background-image: none; box-shadow: none; border-style: none; }\
+window.omaframe-panel, window.omaframe-panel.background { background-color: transparent; background-image: none; box-shadow: none; border-style: none; }\
 .panel-shell { background-color: @popover_bg_color; border: 1px solid @borders; border-radius: 12px; box-shadow: 0 6px 18px alpha(black, 0.35); margin: 8px; }\
 preferences-page { background-color: transparent; }\
 preferences-page > scrolledwindow > viewport { margin: 0; padding: 0; }\
@@ -295,14 +295,14 @@ fn build(state: &Rc<AppState>) -> Panel {
         .build();
     win.set_decorated(false);
     win.set_resizable(false);
-    win.add_css_class("photo-frame-panel");
+    win.add_css_class("omaframe-panel");
     win.set_default_size(mw, mh);
     // 窗口本身也要有最小尺寸：GTK 会按内容的自然尺寸缩小窗口，只有 default_size 不够
     win.set_size_request(mw, mh);
     win.set_visible(false);
     win.init_layer_shell();
     win.set_layer(Layer::Overlay);
-    win.set_namespace(Some("photo-frame-settings"));
+    win.set_namespace(Some("omaframe-settings"));
     // 独占键盘：Esc 与输入框都能用；隐藏后 surface 不映射，不会抢键盘
     win.set_keyboard_mode(KeyboardMode::Exclusive);
     win.set_exclusive_zone(0);
