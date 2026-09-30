@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn rejects_solid_frame() {
-        let mut pb =
+        let pb =
             gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, 200, 200).unwrap();
         for y in 0..200 {
             for x in 0..200 {
