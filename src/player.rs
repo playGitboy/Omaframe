@@ -793,6 +793,20 @@ impl MediaPlayer {
     }
 
     /// 重新扫描（设置里改了目录时调用）
+    /// 媒体目录变了：重建媒体源 + 重新扫描 + 立刻显示新目录的第一项。
+    /// （只 `rescan()` 不够：媒体源是启动时创建的，不重建就会一直扫旧目录）
+    pub fn reload_source(self: &Rc<Self>) {
+        let source_cfg = { self.state.config.borrow().source.clone() };
+        match create_source(&source_cfg) {
+            Ok(src) => {
+                crate::info!("媒体目录已切换：{}", source_cfg.path);
+                self.lib.set_source(src);
+            }
+            Err(e) => crate::warn!("媒体目录无法使用：{e}"),
+        }
+        self.rescan();
+    }
+
     pub fn rescan(self: &Rc<Self>) {
         let this = self.clone();
         self.lib.on_scanned(Box::new(move || {

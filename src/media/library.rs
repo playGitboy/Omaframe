@@ -20,7 +20,8 @@ thread_local! {
 }
 
 pub struct MediaLibrary {
-    source: Arc<dyn MediaSource>,
+    /// 媒体源可在设置页改目录后**热替换**（见 `set_source`）
+    source: RefCell<Arc<dyn MediaSource>>,
     items: RefCell<Vec<MediaItem>>,
     index: Cell<usize>,
     status: RefCell<ScanStatus>,
@@ -31,7 +32,7 @@ pub struct MediaLibrary {
 impl MediaLibrary {
     pub fn new(source: Box<dyn MediaSource>) -> Rc<Self> {
         let lib = Rc::new(Self {
-            source: Arc::from(source),
+            source: RefCell::new(Arc::from(source)),
             items: RefCell::new(Vec::new()),
             index: Cell::new(0),
             status: RefCell::new(ScanStatus::Idle),
@@ -47,10 +48,16 @@ impl MediaLibrary {
         self.on_scanned.borrow_mut().push(cb);
     }
 
+    /// **更换媒体源**（设置页改了媒体目录后必须调用）：
+    /// source 是创建时固定的，不换的话 rescan 扫的还是旧目录。
+    pub fn set_source(&self, source: Box<dyn MediaSource>) {
+        *self.source.borrow_mut() = Arc::from(source);
+    }
+
     /// 后台线程扫描（不阻塞 UI）
     pub fn scan(self: &Rc<Self>) {
         *self.status.borrow_mut() = ScanStatus::Scanning;
-        let source = self.source.clone();
+        let source = self.source.borrow().clone();
         let ctx = self.ctx.clone();
         std::thread::Builder::new()
             .name("photo-frame-scan".into())

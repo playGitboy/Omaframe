@@ -291,7 +291,9 @@ impl Config {
         d.max_decode_px = d.max_decode_px.clamp(1024, 16_384);
 
         self.slideshow.interval = self.slideshow.interval.clamp(1, 86_400);
-        self.slideshow.enabled = self.slideshow.interval > 0;
+        // 注意：**不要**在这里用 interval 反推 enabled。
+        // 以前 0 表示"停用"，现在 interval 被夹到 ≥1，那行赋值等于恒为 true，
+        // 会把设置页「自动轮换 → 启用」开关的写入直接覆盖掉（开关点了没反应）。
 
         if self.video.mode != "timed" {
             self.video.mode = "complete".into();

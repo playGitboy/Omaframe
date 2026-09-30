@@ -336,7 +336,9 @@ fn build(state: &Rc<AppState>) -> Panel {
             let dialog = gtk::FileDialog::builder()
                 .title("选择媒体目录")
                 .build();
-            dialog.open(
+            // 必须用 select_folder（**选目录**）；open() 是"选文件"，
+            // 选到文件后 source.path 变成文件路径 → 扫描失败、目录内容不刷新
+            dialog.select_folder(
                 None::<&gtk::Window>,
                 gio::Cancellable::NONE,
                 move |res| {
@@ -356,6 +358,21 @@ fn build(state: &Rc<AppState>) -> Panel {
     }
     dir_row.set_text(&state.config.borrow().source.path);
     dir_row.add_suffix(&dir_browse);
+    {
+        // 手动输入路径：回车（EntryRow 的 apply 信号）同样生效
+        let st = state.clone();
+        let row2 = dir_row.clone();
+        dir_row.connect_apply(move |_| {
+            let p = row2.text().trim().to_string();
+            if p.is_empty() {
+                return;
+            }
+            let p = crate::config::expand_user(&p).to_string_lossy().into_owned();
+            st.update(|c| c.source.path = p.clone());
+            row2.set_text(&p);
+            refresh_media(&st);
+        });
+    }
     g_media.add(&dir_row);
     page.add(&g_media);
 
@@ -525,7 +542,6 @@ fn build(state: &Rc<AppState>) -> Panel {
         });
         g_frame.add(&row);
     }
-
     page.add(&g_frame);
 
     // ---------------- 位置 ----------------
@@ -546,6 +562,7 @@ fn build(state: &Rc<AppState>) -> Panel {
         });
         g_pos.add(&row);
     }
+    page.add(&g_pos);
     let anchor = adw::ComboRow::builder()
         .title("默认位置")
         .model(&gtk::StringList::new(&[
@@ -618,7 +635,6 @@ fn build(state: &Rc<AppState>) -> Panel {
         });
         g_pos.add(&row);
     }
-    page.add(&g_pos);
 
     // 面板卡片：圆角 + 背景 + 滚动
     let shell = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -645,7 +661,6 @@ fn build(state: &Rc<AppState>) -> Panel {
     shell.append(&scroller);
     root.append(&shell);
     win.set_content(Some(&root));
-
     // 点卡片外 → 收起（坐标判断，避免"点卡片内空白处也关"）。
     // 用 capture 阶段：先做"外面就关"的判断，再让卡片里的控件正常处理自己的点击。
     {
@@ -725,9 +740,10 @@ fn build(state: &Rc<AppState>) -> Panel {
     Panel { win }
 }
 
+/// 媒体目录变化后刷新：重建媒体源 → 重新扫描 → 展示窗立刻显示新目录的第一项
 fn refresh_media(state: &Rc<AppState>) {
     if let Some(p) = state.player.borrow().as_ref() {
-        p.rescan();
+        p.reload_source();
     }
 }
 
