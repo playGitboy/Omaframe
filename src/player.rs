@@ -574,6 +574,7 @@ impl MediaPlayer {
             if let Some(w) = self.state.window() {
                 w.view.set_frame_aspect(0.0);
                 w.view.set_frame_texture_with_hole(None, None);
+                w.view.set_frame_slices(None);
                 w.set_frame_mask(None);
             }
             return;
@@ -627,8 +628,23 @@ impl MediaPlayer {
         if let Some(r) = renderer {
             if let Some(w) = self.state.window() {
                 let (fw, fh) = w.view.frame_size();
-                w.view.set_frame_texture_with_hole(r.texture_for(fw, fh), r.inner_hole());
-                w.set_frame_mask(r.mask_surface_for(fw, fh));
+                let fit_mode = self.state.config.borrow().frame.fit.clone();
+                // cover：按用户要求保留相框原始比例并裁切素材（老行为）
+                let slices = if fit_mode == "cover" { None } else { r.slices() };
+                match slices {
+                    // 智能自适应：九宫格（四角不变形、四边拉伸、相框可横可竖）
+                    Some(sl) => {
+                        w.view.set_frame_texture_with_hole(None, r.inner_hole());
+                        w.set_frame_mask(None);
+                        w.view.set_frame_slices(Some(sl));
+                    }
+                    // 回退：整图等比缩放 + 洪泛遮罩
+                    None => {
+                        w.view.set_frame_slices(None);
+                        w.view.set_frame_texture_with_hole(r.texture_for(fw, fh), r.inner_hole());
+                        w.set_frame_mask(r.mask_surface_for(fw, fh));
+                    }
+                }
             }
         }
     }

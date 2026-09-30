@@ -1,5 +1,48 @@
 //! 尺寸与位置计算：整个项目唯一的"比例真理函数"都在这里。
 
+/// 像素矩形（PNG 原始坐标 / 屏幕坐标都用它）。
+/// 九宫格、内容区、切片位置统一用它，避免到处都是裸元组。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RectI {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl RectI {
+    pub const ZERO: RectI = RectI { x: 0, y: 0, w: 0, h: 0 };
+
+    pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
+        Self { x, y, w: w.max(0), h: h.max(0) }
+    }
+    pub fn right(&self) -> i32 {
+        self.x + self.w
+    }
+    pub fn bottom(&self) -> i32 {
+        self.y + self.h
+    }
+    pub fn is_empty(&self) -> bool {
+        self.w <= 0 || self.h <= 0
+    }
+    pub fn aspect(&self) -> f64 {
+        if self.h <= 0 {
+            0.0
+        } else {
+            self.w as f64 / self.h as f64
+        }
+    }
+    pub fn area(&self) -> i64 {
+        self.w as i64 * self.h as i64
+    }
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && y >= self.y && x < self.right() && y < self.bottom()
+    }
+    pub fn as_tuple(&self) -> (i32, i32, i32, i32) {
+        (self.x, self.y, self.w, self.h)
+    }
+}
+
 /// 相框内孔的**可用区**（相对相框矩形 0..1 的比例）。
 ///
 /// 素材宽高按它最大化 → 不规则内孔也能填满，且不会漏到框体/框外。
@@ -182,9 +225,237 @@ pub fn clamp_to_screen(x: i32, y: i32, w: i32, h: i32, screen: Bounds) -> (i32, 
     (clamp(x, 0, max_x), clamp(y, 0, max_y))
 }
 
+/// 九宫格切片顺序（TL, TOP, TR, LEFT, CENTER, RIGHT, BL, BOTTOM, BR）
+pub const SLICE_TL: usize = 0;
+pub const SLICE_TOP: usize = 1;
+pub const SLICE_TR: usize = 2;
+pub const SLICE_LEFT: usize = 3;
+pub const SLICE_CENTER: usize = 4;
+pub const SLICE_RIGHT: usize = 5;
+pub const SLICE_BL: usize = 6;
+pub const SLICE_BOTTOM: usize = 7;
+pub const SLICE_BR: usize = 8;
+
+/// 自适应相框布局：**相框可以变成任意宽高比**，四角保持原始比例。
+///
+/// 原理（9-slice）：把相框切成九片，四角按同一个比例 `k` 缩放（不变形），
+/// 四条边只沿一个方向拉伸，中间那片给媒体。
+///
+/// - `content`：分析得到的最大安全内接矩形（PNG 原始 px）
+/// - `canvas`：PNG 原始画布尺寸
+/// - `media`：媒体要显示的尺寸（像素）
+/// - `grow`：相框边框相对设计值再加粗的比例（如 0.03）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameLayout {
+    /// 相框外框
+    pub frame: RectI,
+    /// 媒体绘制矩形（= 九宫格中心片的目标矩形）
+    pub media: RectI,
+    /// 九片的目标矩形（与 [`SLICE_TL`]…[`SLICE_BR`] 对应），坐标为屏幕坐标
+    pub dst: [RectI; 9],
+    /// 四角/边框的统一缩放系数
+    pub corner_scale: f64,
+}
+
+/// 按九宫格模型算出目标布局（纯函数）。
+pub fn layout_adaptive(
+    origin: (i32, i32),
+    canvas: RectI,
+    content: RectI,
+    media_w: i32,
+    media_h: i32,
+    grow: f64,
+) -> FrameLayout {
+    let (ox, oy) = origin;
+    let mw = media_w.max(1);
+    let mh = media_h.max(1);
+    let g = if grow.is_finite() { grow.clamp(0.0, 0.5) } else { 0.0 };
+
+    // 源边框（相框 PNG 里内容区到画布四边的距离），至少 1px
+    let bl = content.x.max(1);
+    let bt = content.y.max(1);
+    let br = (canvas.w - content.right()).max(1);
+    let bb = (canvas.h - content.bottom()).max(1);
+
+    // 统一缩放系数：让边框至少达到设计比例，再叠加 grow
+    let kx = mw as f64 / content.w.max(1) as f64;
+    let ky = mh as f64 / content.h.max(1) as f64;
+    let k = kx.max(ky) * (1.0 + g);
+
+    let (kl, kt, kr, kb) = (
+        (bl as f64 * k).round().max(1.0) as i32,
+        (bt as f64 * k).round().max(1.0) as i32,
+        (br as f64 * k).round().max(1.0) as i32,
+        (bb as f64 * k).round().max(1.0) as i32,
+    );
+
+    let fw = kl + mw + kr;
+    let fh = kt + mh + kb;
+    let frame = RectI::new(ox, oy, fw, fh);
+    // 媒体矩形 = 中心片目标矩形
+    let media = RectI::new(ox + kl, oy + kt, mw, mh);
+    // 中心片对应源矩形（= 内容区）宽高，供九宫格源切片使用
+    let (cx0, cy0) = (content.x, content.y);
+    let (cx1, cy1) = (content.right(), content.bottom());
+
+    let dst = [
+        RectI::new(ox, oy, kl, kt),                                  // TL
+        RectI::new(ox + kl, oy, mw, kt),                             // TOP
+        RectI::new(ox + kl + mw, oy, kr, kt),                        // TR
+        RectI::new(ox, oy + kt, kl, mh),                             // LEFT
+        RectI::new(ox + kl, oy + kt, mw, mh),                        // CENTER
+        RectI::new(ox + kl + mw, oy + kt, kr, mh),                   // RIGHT
+        RectI::new(ox, oy + kt + mh, kl, kb),                        // BL
+        RectI::new(ox + kl, oy + kt + mh, mw, kb),                   // BOTTOM
+        RectI::new(ox + kl + mw, oy + kt + mh, kr, kb),              // BR
+    ];
+    let _ = (cx0, cy0, cx1, cy1);
+    FrameLayout { frame, media, dst, corner_scale: k }
+}
+
+/// 由内容区反推九宫格的 9 个**源矩形**（PNG 原始坐标，恰好无缝覆盖整张 PNG）。
+pub fn slices_src(canvas: RectI, content: RectI) -> [RectI; 9] {
+    let (bl, bt) = (content.x.max(1), content.y.max(1));
+    let br = (canvas.w - content.right()).max(1);
+    let bb = (canvas.h - content.bottom()).max(1);
+    let (w, h) = (canvas.w, canvas.h);
+    let (cw, ch) = (
+        (w - bl - br).max(1),
+        (h - bt - bb).max(1),
+    );
+    [
+        RectI::new(0, 0, bl, bt),                       // TL
+        RectI::new(bl, 0, cw, bt),                      // TOP
+        RectI::new(w - br, 0, br, bt),                  // TR
+        RectI::new(0, bt, bl, ch),                      // LEFT
+        RectI::new(bl, bt, cw, ch),                     // CENTER
+        RectI::new(w - br, bt, br, ch),                 // RIGHT
+        RectI::new(0, h - bb, bl, bb),                  // BL
+        RectI::new(bl, h - bb, cw, bb),                 // BOTTOM
+        RectI::new(w - br, h - bb, br, bb),             // BR
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_layout_switches_between_landscape_and_portrait() {
+        // 相框 400x300，内容区 (40,40,320,220)
+        let canvas = RectI::new(0, 0, 400, 300);
+        let content = RectI::new(40, 40, 320, 220);
+
+        // 16:9 素材 1600x900
+        let l = layout_adaptive((0, 0), canvas, content, 1600, 900, 0.0);
+        // 边框按统一系数 k = max(1600/320, 900/220) = 5 放大
+        assert_eq!(l.corner_scale, 5.0);
+        assert_eq!(l.frame.w, 1600 + 200 + 200);
+        assert_eq!(l.frame.h, 900 + 200 + 200);
+        assert_eq!(l.media.as_tuple(), (200, 200, 1600, 900));
+        // 相框是横的
+        assert!(l.frame.w > l.frame.h);
+
+        // 9:16 素材 900x1600 → 相框必须变成**竖的**
+        let p = layout_adaptive((0, 0), canvas, content, 900, 1600, 0.0);
+        assert!(p.frame.h > p.frame.w, "竖屏素材应得到竖向相框 {:?}", p.frame);
+        assert_eq!(p.media.as_tuple(), (p.dst[SLICE_LEFT].w, p.dst[SLICE_TOP].h, 900, 1600));
+        // 竖屏时 k 由高度决定
+        let expect_k = (1600.0 / 220.0f64).max(900.0 / 320.0);
+        assert!((p.corner_scale - expect_k).abs() < 1e-9);
+
+        // 1:1 素材 1000x1000
+        let sq = layout_adaptive((0, 0), canvas, content, 1000, 1000, 0.0);
+        assert_eq!(sq.media.as_tuple(), (sq.dst[SLICE_LEFT].w, sq.dst[SLICE_TOP].h, 1000, 1000));
+
+        // 21:9 超宽 2100x900：媒体矩形必须严格保持 21:9（不变形）
+        let wide = layout_adaptive((0, 0), canvas, content, 2100, 900, 0.0);
+        assert_eq!(wide.media.as_tuple(), (wide.dst[SLICE_LEFT].w, wide.dst[SLICE_TOP].h, 2100, 900));
+        assert!((wide.media.aspect() - 2100.0 / 900.0).abs() < 1e-9);
+        // 外框比素材更宽（多了左右边框），但比例不会再那么极端
+        assert!(wide.frame.w > wide.frame.h && wide.frame.w > 2100);
+    }
+
+    /// **核心不变量**：媒体矩形 == 九宫格中心片，且两者宽高比一致（1px 内）
+    /// → 素材"contain"进中心片时正好铺满，**不可能出现缝隙**（不会露出桌面）。
+    #[test]
+    fn media_rect_exactly_matches_center_slice_no_gap() {
+        let canvas = RectI::new(0, 0, 1346, 719);
+        for hole in [
+            RectI::new(94, 84, 1113, 527),
+            RectI::new(30, 20, 1200, 600),
+            RectI::new(200, 60, 800, 600),
+        ] {
+            for (mw, mh) in [
+                (1920, 1080), (1080, 1920), (1200, 1200), (2520, 1080), (600, 1500),
+            ] {
+                let l = layout_adaptive((17, 33), canvas, hole, mw, mh, 0.03);
+                assert_eq!(
+                    l.media.as_tuple(),
+                    l.dst[SLICE_CENTER].as_tuple(),
+                    "媒体矩形必须等于中心片"
+                );
+                assert_eq!((l.media.w, l.media.h), (mw, mh), "媒体尺寸不能被改动");
+                assert_eq!(l.media.aspect(), mw as f64 / mh as f64);
+                // 九宫格严丝合缝（无缝、无重叠）
+                assert_eq!(l.dst[SLICE_LEFT].w + l.dst[SLICE_CENTER].w + l.dst[SLICE_RIGHT].w, l.frame.w);
+                assert_eq!(l.dst[SLICE_TOP].h + l.dst[SLICE_CENTER].h + l.dst[SLICE_BOTTOM].h, l.frame.h);
+                // 中心片宽度 = 媒体宽度 → 横向也没有多余空隙
+                assert_eq!(l.dst[SLICE_TOP].w, mw);
+                assert_eq!(l.dst[SLICE_LEFT].h, mh);
+            }
+        }
+    }
+
+    #[test]
+    fn corners_keep_their_aspect_ratio() {
+        // 四角切片：目标宽高都乘同一个 k → 宽高比与源一致（绝不变形）
+        let canvas = RectI::new(0, 0, 400, 300);
+        let content = RectI::new(40, 40, 320, 220);
+        let src = slices_src(canvas, content);
+        for (media_w, media_h) in [(1600, 900), (900, 1600), (1000, 1000), (2100, 900)] {
+            let l = layout_adaptive((0, 0), canvas, content, media_w, media_h, 0.03);
+            for idx in [SLICE_TL, SLICE_TR, SLICE_BL, SLICE_BR] {
+                let sa = src[idx].aspect();
+                let da = l.dst[idx].aspect();
+                assert!(
+                    (sa - da).abs() < 0.02,
+                    "角 {idx} 变形：源 {sa:.3} → 目标 {da:.3}（素材 {media_w}x{media_h}）"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nine_slices_tile_the_frame_without_gaps() {
+        let canvas = RectI::new(0, 0, 400, 300);
+        let content = RectI::new(40, 40, 320, 220);
+        let l = layout_adaptive((0, 0), canvas, content, 1600, 900, 0.0);
+        // 四角贴住外框
+        assert_eq!(l.dst[SLICE_TL].as_tuple(), (0, 0, 200, 200));
+        assert_eq!(l.dst[SLICE_BR].right(), l.frame.w);
+        assert_eq!(l.dst[SLICE_BR].bottom(), l.frame.h);
+        // 中间那片正好是媒体矩形
+        assert_eq!(l.dst[SLICE_CENTER].as_tuple(), l.media.as_tuple());
+        // 顶边宽度 + 两角 = 相框宽
+        assert_eq!(l.dst[SLICE_LEFT].w + l.dst[SLICE_TOP].w + l.dst[SLICE_RIGHT].w, l.frame.w);
+        assert_eq!(l.dst[SLICE_TOP].h + l.dst[SLICE_CENTER].h + l.dst[SLICE_BOTTOM].h, l.frame.h);
+    }
+
+    #[test]
+    fn slices_src_covers_the_whole_canvas() {
+        let canvas = RectI::new(0, 0, 400, 300);
+        let content = RectI::new(40, 40, 320, 220);
+        let s = slices_src(canvas, content);
+        // 四角从画布四角开始
+        assert_eq!(s[SLICE_TL].as_tuple(), (0, 0, 40, 40));
+        assert_eq!(s[SLICE_BR].right(), 400);
+        assert_eq!(s[SLICE_BR].bottom(), 300);
+        // 中心 = 内容区
+        assert_eq!(s[SLICE_CENTER].as_tuple(), content.as_tuple());
+        // 顶边三片拼起来正好一行
+        assert_eq!(s[SLICE_TL].w + s[SLICE_TOP].w + s[SLICE_TR].w, 400);
+    }
 
     #[test]
     fn landscape_fits_by_width() {

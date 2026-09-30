@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod controls;
 mod frame;
+mod frame_model;
 mod geometry;
 mod hypr;
 mod log;

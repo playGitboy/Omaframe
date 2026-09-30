@@ -64,6 +64,10 @@ mod imp {
         pub hit_rect: Cell<(f64, f64, f64, f64)>,
         /// 相框内孔（透明区）比例（None = 无内孔，退回叠图）
         pub inner_hole: Cell<Option<crate::frame::InnerHole>>,
+        /// 智能九宫格切片（Some = 走自适应路径；None = 等比缩放回退）
+        pub frame_slices: RefCell<Option<Rc<crate::frame::FrameSlices>>>,
+        /// 最近一次 geometry() 用的九宫格布局（绘制时复用，避免重复计算）
+        pub layout: Cell<Option<crate::geometry::FrameLayout>>,
         /// 内孔遮罩（cairo surface：alpha=255 处允许显示媒体），把媒体擦成内孔形状
         pub frame_mask: RefCell<Option<Rc<cairo::ImageSurface>>>,
         pub press_x: Cell<f64>,
@@ -111,6 +115,124 @@ mod imp {
 
             let media_rect = gtk::graphene::Rect::new(mx as f32, my as f32, mw as f32, mh as f32);
             let frame_rect = gtk::graphene::Rect::new(fx as f32, fy as f32, fw as f32, fh as f32);
+
+            // ===== 智能九宫格路径 =====
+            let slices_now = self.frame_slices.borrow().clone();
+            if let (Some(sl), Some(layout)) = (slices_now, self.layout.get()) {
+                // 1) 媒体：contain 到中心片（布局已按素材比例定内容区，基本精确贴合）
+                snapshot.save();
+                let clip = gtk::graphene::Rect::new(
+                    mx as f32,
+                    my as f32,
+                    mw.max(1) as f32,
+                    mh.max(1) as f32,
+                );
+                snapshot.push_clip(&clip);
+                if let Some(tex) = self.texture.borrow().clone() {
+                    let (tw, th) = (tex.width().max(1) as f32, tex.height().max(1) as f32);
+                    let s = (mw.max(1) as f32 / tw).min(mh.max(1) as f32 / th);
+                    let (w2, h2) = (tw * s, th * s);
+                    let draw = gtk::graphene::Rect::new(
+                        mx as f32 + (mw.max(1) as f32 - w2) / 2.0,
+                        my as f32 + (mh.max(1) as f32 - h2) / 2.0,
+                        w2,
+                        h2,
+                    );
+                    snapshot.append_texture(&tex, &draw);
+                }
+                snapshot.pop();
+                snapshot.restore();
+
+                // 2) 遮罩：九片各自 DestOut（按相框真实 alpha，抗锯齿、绝不漏出框外）
+                for i in 0..9 {
+                    let d = layout.dst[i];
+                    if d.is_empty() {
+                        continue;
+                    }
+                    let surf = sl.mask[i].clone();
+                    let (sw_, sh_) = (surf.width().max(1), surf.height().max(1));
+                    let rect = gtk::graphene::Rect::new(
+                        d.x as f32,
+                        d.y as f32,
+                        d.w as f32,
+                        d.h as f32,
+                    );
+                    let cr = snapshot.append_cairo(&rect);
+                    let _ = cr.save();
+                    cr.set_operator(cairo::Operator::DestOut);
+                    cr.translate(d.x as f64, d.y as f64);
+                    cr.scale(d.w as f64 / sw_ as f64, d.h as f64 / sh_ as f64);
+                    let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
+                    let pat = cr.source();
+                    let _ = pat.set_filter(cairo::Filter::Good);
+                    cr.rectangle(0.0, 0.0, sw_ as f64, sh_ as f64);
+                    let _ = cr.fill();
+                    let _ = cr.restore();
+                }
+
+                // 3) 相框：九片叠在最上层（四角等比、四边拉伸）
+                for i in 0..9 {
+                    let d = layout.dst[i];
+                    if d.is_empty() {
+                        continue;
+                    }
+                    let surf = sl.frame[i].clone();
+                    let (sw_, sh_) = (surf.width().max(1), surf.height().max(1));
+                    let rect = gtk::graphene::Rect::new(
+                        d.x as f32,
+                        d.y as f32,
+                        d.w as f32,
+                        d.h as f32,
+                    );
+                    let cr = snapshot.append_cairo(&rect);
+                    let _ = cr.save();
+                    cr.translate(d.x as f64, d.y as f64);
+                    cr.scale(d.w as f64 / sw_ as f64, d.h as f64 / sh_ as f64);
+                    let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
+                    let pat = cr.source();
+                    let _ = pat.set_filter(cairo::Filter::Good);
+                    cr.rectangle(0.0, 0.0, sw_ as f64, sh_ as f64);
+                    let _ = cr.fill();
+                    let _ = cr.restore();
+                }
+
+                // 4) 开发用 Debug Overlay（PF_FRAME_DEBUG=1）
+                if std::env::var_os("PF_FRAME_DEBUG").is_some() {
+                    let cr = snapshot.append_cairo(&frame_rect);
+                    cr.set_source_rgba(0.0, 0.9, 1.0, 0.9);
+                    cr.set_line_width(1.0);
+                    for i in 0..9 {
+                        let d = layout.dst[i];
+                        cr.rectangle(
+                            d.x as f64 + 0.5,
+                            d.y as f64 + 0.5,
+                            (d.w - 1).max(1) as f64,
+                            (d.h - 1).max(1) as f64,
+                        );
+                        let _ = cr.stroke();
+                    }
+                    cr.set_source_rgba(1.0, 0.2, 0.4, 0.95);
+                    cr.set_dash(&[6.0, 4.0], 0.0);
+                    cr.rectangle(
+                        layout.media.x as f64 + 0.5,
+                        layout.media.y as f64 + 0.5,
+                        (layout.media.w - 1).max(1) as f64,
+                        (layout.media.h - 1).max(1) as f64,
+                    );
+                    let _ = cr.stroke();
+                    cr.set_dash(&[], 0.0);
+                }
+
+                // 悬停控制层
+                let layout_ctl = ControlLayout::new(fw, fh);
+                snapshot.save();
+                snapshot.translate(&gtk::graphene::Point::new(fx as f32, fy as f32));
+                let cr = snapshot.append_cairo(&frame_rect);
+                crate::controls::paint(&cr, &layout_ctl, &self.controls);
+                snapshot.restore();
+                snapshot.restore();
+                return;
+            }
             // 媒体绘制：若相框检测到内孔，裁剪到内孔（并外扩 MASK_FEATHER 藏边）
             let hole = self.inner_hole.get();
             // 媒体绘制矩形就是内孔最大范围（geometry() 已算好），这里裁剪到它
@@ -245,9 +367,34 @@ impl imp::MediaView {
             y1: h.y1,
         });
 
+        // ③-a **智能自适应路径**：相框可以被拉伸成任意宽高比，四角按同一比例缩放（不变形）
+        let slices = self.frame_slices.borrow().clone();
+        if let Some(sl) = slices.as_ref() {
+            // 素材显示比：缩放后的大小就是内容区（相框会跟着收紧 → 不会露桌面）
+            let zoom = self.media_zoom.get().clamp(0.0, 1.0);
+            let mw = ((sw as f64) * zoom).round().max(1.0) as i32;
+            let mh = ((sh as f64) * zoom).round().max(1.0) as i32;
+            let grow = self.frame_grow.get().clamp(0.0, 0.5);
+            let canvas = sl.model.canvas;
+            // 中心片 = 内孔范围（素材铺满内孔，才不会露一圈桌面）
+            let content = sl.model.hole;
+            // 先按 (0,0) 算一次拿尺寸 → 夹进屏幕 → 再按最终原点算一次
+            let probe = crate::geometry::layout_adaptive((0, 0), canvas, content, mw, mh, grow);
+            let (sfw0, sfh0) = (self.surf_w.get().max(16), self.surf_h.get().max(16));
+            let fx0 = crate::geometry::clamp(self.frame_x.get(), 0, (sfw0 - probe.frame.w).max(0));
+            let fy0 = crate::geometry::clamp(self.frame_y.get(), 0, (sfh0 - probe.frame.h).max(0));
+            let layout =
+                crate::geometry::layout_adaptive((fx0, fy0), canvas, content, mw, mh, grow);
+            self.layout.set(Some(layout));
+            let f = layout.frame;
+            let m = layout.media;
+            return (f.x, f.y, f.w, f.h, m.x, m.y, m.w, m.h);
+        }
+        self.layout.set(None);
+
         // ③ 相框尺寸
         //    有内孔：让"内孔最大范围"正好等于**素材 × (1+grow)**（默认 3%）
-        //    → 相框宽高随素材自适应（自适应素材比例与大小），且保持 PNG 自身比例
+        //    → 相框宽高随素材自适应（自适应比例与大小），且保持 PNG 自身比例
         let (mut fw, mut fh) = match fit {
             Some(f) => crate::geometry::frame_size_for_box(f, aspect, gsw as f64, gsh as f64),
             // 叠图模式（无内孔）：按 PNG 比例 fit 进"素材 × 外扩"目标盒
@@ -639,6 +786,13 @@ impl MediaView {
     pub fn set_preview_box(&self, w: i32, h: i32) {
         self.imp().preview_box_w.set(w.max(0));
         self.imp().preview_box_h.set(h.max(0));
+    }
+
+    /// 设置九宫格切片（None = 回退到整图等比缩放）
+    pub fn set_frame_slices(&self, slices: Option<Rc<crate::frame::FrameSlices>>) {
+        *self.imp().frame_slices.borrow_mut() = slices;
+        self.imp().layout.set(None);
+        self.queue_draw();
     }
 
     pub fn set_frame_texture_with_hole(

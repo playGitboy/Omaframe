@@ -53,9 +53,23 @@ pub struct HoleMask {
     pub hole: InnerHole,
 }
 
+/// 九宫格切片（相框 9 片 + 遮罩 9 片），全部按**原始分辨率**保存，
+/// 绘制时由 cairo 缩放 → 比"整图缩放到目标尺寸"更清晰（4K 素材也不糊）。
+pub struct FrameSlices {
+    pub model: std::rc::Rc<crate::frame_model::FrameModel>,
+    pub frame: [std::rc::Rc<cairo::ImageSurface>; 9],
+    pub mask: [std::rc::Rc<cairo::ImageSurface>; 9],
+    /// 源切片矩形（PNG 原始坐标），与 dst 一一对应
+    pub src: [crate::geometry::RectI; 9],
+}
+
 pub struct FrameRenderer {
     /// 原始相框（未缩放）
     source: RefCell<Option<gdk_pixbuf::Pixbuf>>,
+    /// 智能分析模型（None = 分析失败，走旧的等比缩放路径）
+    model: RefCell<Option<std::rc::Rc<crate::frame_model::FrameModel>>>,
+    /// 九宫格切片（惰性构建一次）
+    slices: RefCell<Option<std::rc::Rc<FrameSlices>>>,
     /// 已缓存的相框纹理：(逻辑尺寸, 纹理)
     cache: RefCell<Option<((i32, i32), gdk::Texture)>>,
     /// 遮罩 surface 缓存：(逻辑尺寸, surface)
@@ -75,6 +89,26 @@ impl FrameRenderer {
         loader.write(&bytes).ok()?;
         loader.close().ok()?;
         let pixbuf = loader.pixbuf()?;
+
+        // ① 智能分析（优先读缓存）→ FrameModel
+        let opts = crate::frame_model::AnalyzeOpts::default();
+        let model = match crate::frame_model::load_cached(path, &opts) {
+            Some(m) => {
+                crate::debug!(
+                    "相框模型命中缓存：内容区 {}x{} @{},{}",
+                    m.hole.w, m.hole.h, m.hole.x, m.hole.y
+                );
+                Some(std::rc::Rc::new(m))
+            }
+            None => match crate::frame_model::analyze(&pixbuf, opts) {
+                Some(a) => {
+                    crate::frame_model::save_cached(path, &opts, &a.model);
+                    Some(std::rc::Rc::new(a.model))
+                }
+                None => None, // 分析失败 → 退回等比缩放（下面用旧的洪泛结果）
+            },
+        };
+
         let built = build_hole_mask(&pixbuf);
         match built.as_ref() {
             Some(m) => crate::debug!(
@@ -99,6 +133,8 @@ impl FrameRenderer {
         let mask = built.map(|m| m.mask);
         Some(Self {
             source: RefCell::new(Some(pixbuf)),
+            model: RefCell::new(model),
+            slices: RefCell::new(None),
             cache: RefCell::new(None),
             mask_cache: RefCell::new(None),
             scale: Cell::new(scale.clamp(1.0, 2.0)),
@@ -118,6 +154,42 @@ impl FrameRenderer {
     /// 内孔（相对比例）；None = 叠图模式
     pub fn inner_hole(&self) -> Option<InnerHole> {
         self.inner.get()
+    }
+
+    /// 智能分析的相框模型；None = 分析失败（走等比缩放回退）
+    pub fn model(&self) -> Option<std::rc::Rc<crate::frame_model::FrameModel>> {
+        self.model.borrow().clone()
+    }
+
+    /// 九宫格切片（**惰性构建一次**，之后缓存复用）；
+    /// 分析失败时返回 None（调用方走旧的等比缩放路径）。
+    pub fn slices(&self) -> Option<std::rc::Rc<FrameSlices>> {
+        if let Some(s) = self.slices.borrow().as_ref() {
+            return Some(s.clone());
+        }
+        let model = self.model()?;
+        let src_pb = self.source.borrow().clone()?;
+        // 遮罩只在"相框真实尺寸"下有意义；这里按原始分辨率生成，绘制时缩放。
+        let mask_pb = crate::frame_model::build_mask_pixbuf(&src_pb, &model)?;
+        let src = model.slices();
+        let mut frame = Vec::with_capacity(9);
+        let mut mask = Vec::with_capacity(9);
+        for r in src.iter() {
+            frame.push(pixbuf_rect_to_surface(&src_pb, *r)?);
+            mask.push(pixbuf_gray_rect_to_surface(&mask_pb, *r)?);
+        }
+        let arr = |v: Vec<std::rc::Rc<cairo::ImageSurface>>| -> [std::rc::Rc<cairo::ImageSurface>; 9] {
+            let mut it = v.into_iter();
+            std::array::from_fn(|_| it.next().unwrap())
+        };
+        let s = std::rc::Rc::new(FrameSlices {
+            model,
+            frame: arr(frame),
+            mask: arr(mask),
+            src,
+        });
+        *self.slices.borrow_mut() = Some(s.clone());
+        Some(s)
     }
 
 
@@ -191,10 +263,103 @@ impl FrameRenderer {
     }
 }
 
+/// 取 pixbuf 的一个子矩形 → 预乘 ARGB32 的 cairo surface（保持原始像素，不做缩放）
+fn pixbuf_rect_to_surface(
+    pb: &gdk_pixbuf::Pixbuf,
+    r: crate::geometry::RectI,
+) -> Option<std::rc::Rc<cairo::ImageSurface>> {
+    let (x0, y0) = (r.x.max(0), r.y.max(0));
+    if x0 >= pb.width() || y0 >= pb.height() {
+        return None;
+    }
+    let w = r.w.min(pb.width() - x0).max(1);
+    let h = r.h.min(pb.height() - y0).max(1);
+    let sub = pb.new_subpixbuf(x0, y0, w, h);
+    let sub = if sub.n_channels() == 4 {
+        sub
+    } else {
+        sub.add_alpha(false, 0, 0, 0).ok()?
+    };
+    let stride = sub.rowstride() as usize;
+    let nch = sub.n_channels() as usize;
+    // SAFETY: 只读扫描
+    let src = unsafe { sub.pixels() };
+    let mut data = vec![0u8; (w * 4 * h) as usize];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let o = (y * w as usize + x) * 4;
+            let s = y * stride + x * nch;
+            let (a, r0, g0, b0) = if nch >= 4 {
+                (src[s + 3] as u16, src[s] as u16, src[s + 1] as u16, src[s + 2] as u16)
+            } else {
+                (255u16, src[s] as u16, src[s + 1] as u16, src[s + 2] as u16)
+            };
+            // 预乘（cairo ARgb32 要求）
+            data[o] = (b0 * a / 255) as u8;
+            data[o + 1] = (g0 * a / 255) as u8;
+            data[o + 2] = (r0 * a / 255) as u8;
+            data[o + 3] = a as u8;
+        }
+    }
+    cairo::ImageSurface::create_for_data(
+        data,
+        cairo::Format::ARgb32,
+        w,
+        h,
+        (w * 4) as i32,
+    )
+    .ok()
+    .map(std::rc::Rc::new)
+}
+
+/// 灰度遮罩子矩形 → ARgb32 surface（白色 + 灰度当 alpha），供 `DestOut` 擦除
+fn pixbuf_gray_rect_to_surface(
+    pb: &gdk_pixbuf::Pixbuf,
+    r: crate::geometry::RectI,
+) -> Option<std::rc::Rc<cairo::ImageSurface>> {
+    let (x0, y0) = (r.x.max(0), r.y.max(0));
+    if x0 >= pb.width() || y0 >= pb.height() {
+        return None;
+    }
+    let w = r.w.min(pb.width() - x0).max(1);
+    let h = r.h.min(pb.height() - y0).max(1);
+    let stride = pb.rowstride() as usize;
+    let nch = pb.n_channels() as usize;
+    // SAFETY: 只读扫描
+    let src = unsafe { pb.pixels() };
+    let mut data = vec![0u8; (w * 4 * h) as usize];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let s = (y0 as usize + y) * stride + (x0 as usize + x) * nch;
+            let v = src[s];
+            let o = (y * w as usize + x) * 4;
+            // 白色 + alpha=v：DestOut 时 dst *= (1 - v/255)
+            data[o] = 255;
+            data[o + 1] = 255;
+            data[o + 2] = 255;
+            data[o + 3] = v;
+        }
+    }
+    cairo::ImageSurface::create_for_data(
+        data,
+        cairo::Format::ARgb32,
+        w,
+        h,
+        (w * 4) as i32,
+    )
+    .ok()
+    .map(std::rc::Rc::new)
+}
+
 /// 生成遮罩 + 内孔；无内孔时返回 None
 pub fn build_hole_mask(pb: &gdk_pixbuf::Pixbuf) -> Option<HoleMask> {
     let (w, h) = (pb.width(), pb.height());
     if w < 8 || h < 8 {
+        return None;
+    }
+    // 没有 alpha 通道的 PNG（常见的"白底假透明图"）没有内孔可言。
+    // 必须在这里挡住：下面按 4 通道读第 4 字节，3 通道图会**索引越界 panic**。
+    if !pb.has_alpha() || pb.n_channels() < 4 {
         return None;
     }
     let (nch, rowstride) = (pb.n_channels(), pb.rowstride());
@@ -308,6 +473,19 @@ mod tests {
             }
         }
         pb
+    }
+
+    /// 回归：没有 alpha 通道的 PNG（3 通道）不能 panic，必须安全退回叠图模式
+    #[test]
+    fn no_alpha_png_must_not_panic() {
+        let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 64, 48).unwrap();
+        for y in 0..48 {
+            for x in 0..64 {
+                pb.put_pixel(x, y, 255, 255, 255);
+            }
+        }
+        assert!(!pb.has_alpha());
+        assert!(build_hole_mask(&pb).is_none(), "无 alpha 图应退回叠图而不是崩溃");
     }
 
     #[test]
