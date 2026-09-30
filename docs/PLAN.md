@@ -66,30 +66,41 @@ fit(aspect, max_w, max_h) = (orig_w, orig_h) * min(max_w/orig_w, max_h/orig_h)
 
 ## 3. 目录结构
 
+> 已按当前代码校准（早期版本里的 `resize.rs` / `geometry_store.rs` 已并入
+> `geometry.rs` 与 `frame_window.rs`；视频也从 GStreamer playbin 改成了 ffmpeg 管道）。
+
 ```
 omaframe/
-├── Cargo.toml / Makefile / README.md / docs/PLAN.md
+├── Cargo.toml / Makefile / README.md
+├── docs/                PLAN.md（本文）/ REQUIREMENTS.md / KEY-FINDINGS.md
+├── frame/               内置相框库 PNG（横-*/竖-*）
+├── packaging/           自启项 .desktop
+├── scripts/             visual-test.sh（视觉回归）/ rollback.sh（版本回滚）
 └── src/
-    ├── main.rs            # CLI: (无参)=运行  settings  --version  --help
-    ├── app.rs             # AdwApplication 组装、单实例、IPC 唤醒设置页
-    ├── log.rs             # 轻量日志（stderr + 轮转文件），PHOTO_FRAME_LOG=debug
-    ├── config.rs          # ConfigManager：加载/校验/原子保存
-    ├── geometry.rs        # fit()/clamp()/位置换算
+    ├── main.rs            # CLI: (无参)=运行  settings  quit  --version  --help
+    ├── app.rs             # AdwApplication 组装、单实例、IPC 唤醒设置面板
+    ├── log.rs             # 轻量日志（stderr + 轮转），PHOTO_FRAME_LOG=debug
+    ├── config.rs          # 配置加载/sanitize/原子保存 + frame_dir() + 相框库列表
+    ├── geometry.rs        # RectI / fit() / clamp() / **layout_adaptive() 九宫格布局** / slices_src()
+    ├── frame_model.rs     # ★相框分析引擎：降采样→alpha 二值化→边界洪泛→最大连通块
+    │                      #   →腐蚀→最大内接矩形→FrameModel→磁盘缓存 + 抗锯齿遮罩
+    ├── frame.rs           # FrameSlices：相框 9 片 + 遮罩 9 片（原始分辨率，绘制时缩放）
     ├── hypr.rs            # Hyprland IPC 订阅 → VisibilityState
+    ├── player.rs          # 编排：媒体库 + 图片加载 + 轮换 + 视频 + 拖动
+    ├── slideshow.rs       # 轮换/随机/计时/暂停
+    ├── tray.rs            # StatusNotifierItem 托盘图标
+    ├── controls.rs        # hover 控制层（▶/⏸、缩放手柄，布局/命中/绘制）
+    ├── settings.rs        # Adw 弹出式设置面板（单窗口铺满 + 卡片右上对齐）
     ├── media/
     │   ├── mod.rs         # MediaItem / MediaSource trait / MediaKind
+    │   ├── library.rs     # 媒体列表与当前索引
     │   ├── source/local.rs# LocalMediaSource：walkdir 递归扫描（后台线程）
-    │   ├── image.rs       # pixbuf 后台解码 + 降采样 + LRU 纹理缓存 + 预取
-    │   └── video.rs       # GStreamer playbin+appsink → GdkMemoryTexture
-    ├── slideshow.rs       # 轮换/随机/计时/暂停
-    ├── frame.rs           # PNG 相框 overlay 叠加
-    ├── controls.rs        # hover 控制层（▶/⏸，淡入淡出）
-    ├── resize.rs          # 右下角 handle：保持比例的拖拽换算
-    ├── settings.rs        # Adw 设置窗口
+    │   ├── image.rs       # pixbuf 后台解码 + 降采样 + LRU 纹理缓存 + 预取（HEIC 回退 ffmpeg/magick）
+    │   └── video.rs       # ffmpeg 帧管道 → GdkMemoryTexture（含容器旋转矩阵）
     └── window/
         ├── mod.rs         # WindowBackend 抽象（LayerShell / Toplevel）
-        ├── frame_window.rs# 主体窗口：锚点、尺寸、hover、拖动
-        └── geometry_store.rs # 位置/尺寸状态与保存
+        ├── frame_window.rs# 主体窗口：锚点、尺寸、hover、拖动/缩放、输入区域
+        └── media_view.rs  # 自绘：九宫格相框 + 抗锯齿遮罩 + 控制层 + Debug Overlay
 ```
 
 ## 4. MediaSource 扩展点（V2 预留，V1 只实现 Local）

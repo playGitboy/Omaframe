@@ -23,7 +23,7 @@
 | F15 | 手机素材 | HEIC/HEIF 照片可用（外部解码器回退）；MOV 按容器旋转矩阵正确显示为竖屏 |
 | F13 | 任意 PNG 自动可用 | 新相框 PNG 丢进 `frame/` 即可，无需改代码/配置；分析结果 `FrameModel` 可缓存（二次启动 0 次分析） |
 | F16 | 底图圆角 | 图片/视频通用；默认跟随相框内孔圆角（方角相框自动不圆，避免露桌面）；可关/可固定 |
-| F14 | 视觉验收 | 每个核心改动后必须出**效果图**（`scripts/visual-test.sh` → `target/visual/`），检查变形/裁切/穿框/空隙/锯齿 |
+| F14 | 视觉验收 | 每个核心改动后必须出**效果图**（`scripts/visual-test.sh` → `target/visual/`），检查变形/裁切/穿框/空隙/锯齿。脚本默认用**仓库自带的 `frame/`**，仓库克隆到哪都能跑，不需要再传 `PF_FRAME_DIR` |
 | F12 | 崩溃自愈意识 | 每轮改动后自查 `coredumpctl`，有新的崩溃记录就必须查清并修 |
 
 ## 二、审美 / 交互要求
@@ -86,14 +86,14 @@
 
 - 合成器：Hyprland（layer-shell 可用）；显示器：`HEADLESS-1`（scale_factor 报 2，物理 1.25×）+ HDMI 镜像
 - 配置与日志：`~/.config/omarchy-omaframe/config.toml`、`~/.local/state/omarchy-omaframe/logs/`
-- 相框库：`~/omaframe/frame/*.png`（`frame/` 不进 git）
+- 相框库：`~/Omaframe/frame/*.png`（**已随项目入库**，10 个 PNG；横-*/竖-* 两组）
 - 无 GStreamer 解码器；视频走系统 `ffmpeg`（与 `owe` 同一套）
 - 需要装包/改系统配置 → **先问用户**
 
 ## 六、常用命令
 
 ```bash
-cd ~/omaframe
+cd ~/Omaframe
 cargo build --release && cargo test          # 编译 + 22 个单测
 make install                                  # 装到 ~/.local/bin + 自启项
 pkill -x omaframe; setsid nohup ~/.local/bin/omaframe >/dev/null 2>&1 &   # 重启

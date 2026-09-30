@@ -19,21 +19,22 @@ make install        # 只写用户目录，不需要 root，不修改 hypr/omarc
 
 | 位置 | 说明 |
 |---|---|
-| `~/.local/bin/Omaframe` | 主程序 |
-| `~/.config/autostart/Omaframe.desktop` | 登录自启（XDG 标准，延迟 4s，不拖慢桌面加载） |
+| `~/.local/bin/omaframe` | 主程序（**二进制名全小写**；`Omaframe` 只是项目/界面名） |
+| `~/.config/autostart/omaframe.desktop` | 登录自启（XDG 标准，延迟 4s，不拖慢桌面加载） |
 | `frame/*.png` | **内置相框库**（相框样式下拉的选项来源） |
-| `~/.config/omarchy-Omaframe/config.toml` | 配置（首次启动自动生成） |
-| `~/.local/state/omarchy-Omaframe/logs/Omaframe.log` | 日志（自动轮转 1MB） |
+| `~/.config/omarchy-omaframe/config.toml` | 配置（首次**退出**时落盘） |
+| `~/.local/state/omarchy-omaframe/logs/omaframe.log` | 日志（自动轮转 1MB） |
+| `~/.cache/omarchy-omaframe/frames/*.json` | 相框 `FrameModel` 分析缓存（二次启动 0 次分析） |
 
 卸载：`make uninstall`（保留配置）。
 
 ## 使用
 
 ```bash
-Omaframe            # 启动桌面相框
-Omaframe settings   # 打开设置面板（已有实例则通知它打开）
-Omaframe quit       # 退出运行中的实例
-PHOTO_FRAME_LOG=debug Omaframe   # 调试日志
+omaframe            # 启动桌面相框
+omaframe settings   # 打开设置面板（已有实例则通知它打开）
+omaframe quit       # 退出运行中的实例
+PHOTO_FRAME_LOG=debug omaframe   # 调试日志
 ```
 
 ## 状态栏图标
@@ -76,7 +77,7 @@ layer surface（固定 = 整块显示器，尺寸恒定、永不重建）
 
 ## 配置
 
-`~/.config/omarchy-Omaframe/config.toml`（原子写入：临时文件 + rename，损坏时自动备份并回退默认值）
+`~/.config/omarchy-omaframe/config.toml`（原子写入：临时文件 + rename，损坏时自动备份并回退默认值）
 
 ```toml
 [source]
@@ -85,9 +86,9 @@ path = "~/Pictures/PhotoFrame"
 recursive = true
 
 [display]
-max_width = 400         # 相框**固定画布**尺寸（surface 就是这个大小）
+max_width = 400         # **素材绘制矩形的上限**（不是窗口宽！相框外框可以比它大）
 max_height = 600
-                        # （解码分辨率也按它缩，省 8% 内存/带宽）
+                        # （解码分辨率也按它缩 ×(1+grow)×显示器缩放，省内存/带宽）
 cache_items = 12
 cache_budget_mb = 32    # 缓存字节预算（低端机可调小）
 max_decode_px = 4096    # 单边解码像素上限
@@ -104,11 +105,15 @@ mode = "complete"       # complete=播完整段再切 / timed=到点就切
 max_fps = 30
 
 [frame]
-enabled = true
-style = "木纹.png"          # 内置相框库 frame/ 下的 PNG 文件名
-zoom = 100                 # 素材显示比 0-100（以相框中心为基准缩放）
-# 相框 PNG 建议：900x760 左右，两层圆角框，**四角与中心都透明**；
-# 框宽（外沿到内孔）约 60/900 ≈ 6.7%，照片正好落在内孔最大范围上
+desktop_enabled = true  # 关掉后相框从桌面隐藏（媒体/设置/托盘照常）
+enabled = false         # ★默认 false：首次生成配置时不加 PNG 相框；在设置页选样式即打开
+style = "横-木纹.png"     # 内置相框库 frame/ 下的 PNG 文件名（必须与文件名完全一致）
+grow_percent = 3        # 相框比素材每边大多少（形成“卡纸”感）
+fit = "smart"           # smart=九宫格自适应（相框可横可竖） / cover=保持 PNG 原比例
+debug_hud = false       # 调试浮层
+# 相框 PNG 会被自动分析出内孔（透明区），**不用手写坐标**；
+# 任何四角+中心透明的 PNG 丢进 frame/ 即可。分析结果缓存到
+# ~/.cache/omarchy-omaframe/frames/*.json，二次启动 0 次分析。
 
 [window]
 x = 32
@@ -121,34 +126,44 @@ margin = 32
 placed = true
 ```
 
-**位置规则**：`x/y` 是**距"可用区域"边缘的边距**（Hyprland 会为 bar 等组件保留 reserved 区域，
-例如本机左侧有 23px 保留，则 `x=32` 实际显示在 55）。
+**位置规则**：`x/y` 是**相框左上角的屏幕坐标**（逻辑像素）。
+layer surface 恒为整块显示器、边距恒为 0，所以相框在 surface 内偏移 `x/y` 即屏幕坐标；
+Hyprland 的 bar 保留区不影响它（layer surface 不会被压进去）。
+（早期版本把 x/y 当成 layer 边距、并把它当成“素材左上角”再居中相框，
+导致相框一大就整体偏出屏幕 —— 别改回那种语义。）
 
-**尺寸规则**：`scale = min(max_width/w, max_height/h)`，实际显示尺寸 = 原图 × scale。
-所以换横图/竖图时组件会自动变宽变高但**永不拉伸变形**；拖右下角改的是 `max_*`，
-因此"拖出来的比例"和"当前媒体的比例"始终一致。
+**尺寸规则**：`scale = min(max_width/w, max_height/h)`，素材尺寸 = 原图 × scale，
+再乘 `(1 + grow_percent/200)` 作为相框外框的目标盒。所以换横图/竖图时相框会跟着变形尺寸，
+但**素材本身永不拉伸变形**；拖右下角改的是 `max_*`，因此“拖出来的比例”与“当前媒体比例”始终一致。
+相框**外框可以大于** `max_width/max_height`（要容纳 PNG 边框），`layout_adaptive`
+会在超标时整体等比缩小，验收不变量：`相框 ≤ 上限盒 && 素材 ≤ 上限盒`。
 
 ## 目录结构
 
 ```
 src/
 ├── main.rs / app.rs      入口与装配（配置→后端→窗口→播放器）
-├── config.rs             配置结构 + 原子保存
-├── geometry.rs           fit()/位置夹取（全项目唯一的比例真理函数）
+├── config.rs             配置结构 + sanitize + 原子保存
+├── geometry.rs           fit()/位置夹取/**九宫格 layout_adaptive**（全项目唯一的比例真理函数）
+├── frame_model.rs        ★智能相框引擎：alpha 二值化→边界洪泛→最大连通块→腐蚀
+│                         →最大内接矩形→FrameModel→磁盘缓存
 ├── hypr.rs               Hyprland IPC 事件 → 覆盖判定
 ├── log.rs                轻量日志（无 tracing 依赖）
 ├── player.rs             编排：媒体库 + 图片加载 + 轮换 + 视频 + 拖动
 ├── slideshow.rs          计时/随机/暂停
+├── tray.rs               StatusNotifierItem 托盘图标
 ├── controls.rs           控制层布局、命中检测与绘制
-├── frame.rs              PNG 相框纹理
+├── frame.rs              FrameSlices：相框 9 片 + 遮罩 9 片（按原始分辨率保存）
 ├── media/
 │   ├── mod.rs            MediaItem / MediaSource trait（远程源扩展点）
 │   ├── source/local.rs   本地递归扫描
-│   ├── image.rs          后台解码 + 缩放 + LRU 缓存 + 预取
+│   ├── image.rs          后台解码（HEIC 回退 ffmpeg/magick）+ 缩放 + LRU 缓存 + 预取
 │   ├── library.rs        媒体列表与当前索引
-│   └── video.rs          ffmpeg 帧管道 → GdkMemoryTexture
-├── settings.rs           libadwaita 设置**面板**（弹出式，改动即时生效）
-└── window/               layer-shell 窗口 + 自绘媒体控件
+│   └── video.rs          ffmpeg 帧管道 → GdkMemoryTexture（含 MOV 旋转矩阵）
+├── settings.rs           libadwaita 设置**面板**（弹出式，改动即时生效并落盘）
+└── window/
+    ├── frame_window.rs   layer-shell 主体窗口：锚点、hover、拖动/缩放、输入区域
+    └── media_view.rs     自绘：九宫格相框 + 抗锯齿遮罩 + 控制层 + Debug Overlay
 ```
 
 ## 兼容性与性能设计
