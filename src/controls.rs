@@ -1,4 +1,4 @@
-//! 悬停控制层：左右切换 + 底部中央播放/暂停 + 右下角 resize handle。
+//! 悬停控制层：左右切换 + **底图正中**的播放/暂停 + 右下角 resize handle。
 //!
 //! 关键设计：**绘制和命中检测共用 `ControlLayout` 的同一套矩形**，
 //! 因此不会出现"看得见却点不到"。控件全部用 cairo 矢量绘制，
@@ -42,12 +42,18 @@ pub struct ControlLayout {
     pub h: f64,
     /// 按钮直径
     pub d: f64,
-    /// 按钮与边缘的间距
-    pub pad: f64,
+    /// 媒体（底图）矩形，相对相框左上角。播放/暂停按钮落在**它的中心**。
+    pub media: (f64, f64, f64, f64),
 }
 
 impl ControlLayout {
+    /// 只有相框尺寸时：媒体默认铺满整个相框（按钮落在相框中心）
     pub fn new(w: i32, h: i32) -> Self {
+        Self::with_media(w, h, 0.0, 0.0, w as f64, h as f64)
+    }
+
+    /// 带媒体矩形（相框局部坐标）
+    pub fn with_media(w: i32, h: i32, mx: f64, my: f64, mw: f64, mh: f64) -> Self {
         let w = w.max(1) as f64;
         let h = h.max(1) as f64;
         // 小组件小 → 按钮按比例缩小，但不低于 22px 便于点按
@@ -56,17 +62,22 @@ impl ControlLayout {
             w,
             h,
             d,
-            pad: (d * 0.45).max(6.0),
+            media: (mx, my, mw.max(1.0), mh.max(1.0)),
         }
     }
 
-    pub fn play_rect(&self) -> (f64, f64, f64, f64) {
+    /// 媒体中心（相对相框左上角）
+    pub fn media_center(&self) -> (f64, f64) {
         (
-            (self.w - self.d) / 2.0,
-            self.h - self.pad - self.d,
-            self.d,
-            self.d,
+            self.media.0 + self.media.2 / 2.0,
+            self.media.1 + self.media.3 / 2.0,
         )
+    }
+
+    /// 播放/暂停按钮：**位于底图正中**
+    pub fn play_rect(&self) -> (f64, f64, f64, f64) {
+        let (cx, cy) = self.media_center();
+        (cx - self.d / 2.0, cy - self.d / 2.0, self.d, self.d)
     }
 
     /// 右下角 resize 热区（比按钮略大一点，方便抓）
@@ -77,7 +88,7 @@ impl ControlLayout {
 
     /// 命中检测：
     /// - 右下角小方块 = 改大小
-    /// - 底部中央圆钮 = 播放/暂停
+    /// - 底图正中圆钮 = 播放/暂停
     /// - 其余区域按左右半边分：左半 = 上一项，右半 = 下一项（无按钮，纯点击热区）
     pub fn hit(&self, x: f64, y: f64) -> HitZone {
         if inside(self.resize_rect(), x, y) {
@@ -327,6 +338,24 @@ mod tests {
     }
 
     #[test]
+    fn play_button_sits_at_media_center() {
+        // 相框 600x400，但媒体偏在右上（不规则相框的常见情况）
+        let l = ControlLayout::with_media(600, 400, 300.0, 40.0, 260.0, 200.0);
+        let (px, py, pw, ph) = l.play_rect();
+        let cx = px + pw / 2.0;
+        let cy = py + ph / 2.0;
+        // 按钮中心 == 媒体中心
+        assert!((cx - 430.0).abs() < 0.01, "按钮中心 x {cx} 应为媒体中心 430");
+        assert!((cy - 140.0).abs() < 0.01, "按钮中心 y {cy} 应为媒体中心 140");
+        // 命中与拖动判定都按这个位置
+        assert_eq!(l.hit(cx, cy), HitZone::PlayPause);
+        assert_eq!(l.drag_mode_at(cx, cy), None);
+        // 相框中心不再是播放键（播放键跟随媒体，避免和左右热区/拖动混淆）
+        assert_ne!(l.hit(300.0, 200.0), HitZone::PlayPause);
+        assert_eq!(l.hit(300.0, 200.0), HitZone::Next);
+    }
+
+    #[test]
     fn resize_handle_sits_at_frame_bottom_right() {
         // 相框 500x300（几何重构后：相框按 PNG 自身比例，可能小于上限盒）
         let l = ControlLayout::new(500, 300);
@@ -339,8 +368,9 @@ mod tests {
         let hy = ry + rh / 2.0;
         assert_eq!(l.hit(hx, hy), HitZone::Resize);
         assert_eq!(l.drag_mode_at(hx, hy), Some(DragMode::Resize));
-        // 中心区域是 Move（不是 Resize）
-        assert_eq!(l.drag_mode_at(250.0, 150.0), Some(DragMode::Move));
+        // 非按钮区域是 Move（不是 Resize）；中心现在是播放/暂停键，不启动拖动
+        assert_eq!(l.drag_mode_at(250.0, 60.0), Some(DragMode::Move));
+        assert_eq!(l.drag_mode_at(250.0, 150.0), None);
         // 播放/暂停按钮上不启动拖动
         let (px, py, pw, ph) = l.play_rect();
         assert_eq!(l.drag_mode_at(px + pw / 2.0, py + ph / 2.0), None);

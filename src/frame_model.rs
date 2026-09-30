@@ -23,7 +23,7 @@ use crate::geometry::{slices_src, RectI};
 use std::path::{Path, PathBuf};
 
 /// 算法版本：改动分析逻辑必须 +1，否则旧缓存会继续生效
-pub const ANALYSIS_VERSION: u32 = 2;
+pub const ANALYSIS_VERSION: u32 = 3;
 
 /// "完全透明"的阈值：alpha ≤ 它才算可以放东西的区域。
 /// 取小值（而不是 24/32）是为了**把半透明羽化带留给相框本体**：
@@ -60,6 +60,9 @@ pub struct FrameModel {
     /// 与 `hole` 的区别：内孔里可能有花朵/藤蔓等装饰伸进来，安全矩形保证"没有装饰"。
     /// 它用于质量评估/诊断与兜底（避免把装饰当成内容区），不作为相框拉伸的基准。
     pub safe: RectI,
+    /// **内孔四角的圆角半径**（PNG 原始像素）：用来给底图做同样的圆角。
+    /// 0 = 方角（相框开口是方的，底图也不该圆，否则会露出桌面）
+    pub corner_radius: f64,
     /// 内孔面积占比（用于判断这个相框是否可用）
     pub hole_ratio: f64,
     /// 安全区面积占比（分析质量指标）
@@ -312,14 +315,77 @@ pub fn analyze(pb: &gdk_pixbuf::Pixbuf, opts: AnalyzeOpts) -> Option<Analysis> {
         (hole_box.3 as f64 * sy).ceil() as i32,
     );
 
+    // 内孔圆角半径：看内孔**每条边的第一个透明像素**离包围盒边多远。
+    // 方角 → 0；圆角 → 该内缩量就是半径。
+    // （不能用"从包围盒角沿对角线找实体"：包围盒角常常落在内孔之外，会立刻命中 → 半径虚高）
+    let corner_radius = {
+        let thr = opts.alpha_threshold;
+        let (bx0, by0, bw, bh) = hole_box;
+        let (bx1, by1) = (bx0 + bw - 1, by0 + bh - 1);
+        let transparent_at = |x: i32, y: i32| -> bool {
+            x >= 0 && y >= 0 && x < w && y < h && alpha[(y * w + x) as usize] <= thr
+        };
+        // 从边线向内扫若干行，取"透明起点离包围盒边"的中位，避免抗锯齿毛刺
+        let mut radii: Vec<i32> = Vec::new();
+        for dy in 1..4.min(bh) {
+            // 上边：左端 / 右端
+            if let Some(x) = (bx0..=bx1).find(|x| transparent_at(*x, by0 + dy)) {
+                radii.push(x - bx0);
+            }
+            if let Some(x) = (bx0..=bx1).rev().find(|x| transparent_at(*x, by0 + dy)) {
+                radii.push(bx1 - x);
+            }
+            // 下边
+            if let Some(x) = (bx0..=bx1).find(|x| transparent_at(*x, by1 - dy)) {
+                radii.push(x - bx0);
+            }
+            if let Some(x) = (bx0..=bx1).rev().find(|x| transparent_at(*x, by1 - dy)) {
+                radii.push(bx1 - x);
+            }
+        }
+        for dx in 1..4.min(bw) {
+            // 左边：上端 / 下端
+            if let Some(y) = (by0..=by1).find(|y| transparent_at(bx0 + dx, *y)) {
+                radii.push(y - by0);
+            }
+            if let Some(y) = (by0..=by1).rev().find(|y| transparent_at(bx0 + dx, *y)) {
+                radii.push(by1 - y);
+            }
+            // 右边
+            if let Some(y) = (by0..=by1).find(|y| transparent_at(bx1 - dx, *y)) {
+                radii.push(y - by0);
+            }
+            if let Some(y) = (by0..=by1).rev().find(|y| transparent_at(bx1 - dx, *y)) {
+                radii.push(by1 - y);
+            }
+        }
+        if radii.is_empty() {
+            0.0
+        } else {
+            radii.sort_unstable();
+            let med = radii[radii.len() / 2];
+            // 一致性检查：多数采样点要和中位数接近才算"真圆角"。
+            // 否则只是某条边上有装饰/缺口（木纹的灯笼书本、复古的角饰），
+            // 照着它圆角会白白切掉照片内容 → 宁可当方角。
+            let agree = radii.iter().filter(|r| (**r as f64 - med as f64).abs() <= 2.0).count();
+            let limit = (bw.min(bh) / 3).max(1);
+            if med < 6 || med > limit || agree * 5 < radii.len() * 3 {
+                0.0
+            } else {
+                // 分析像素 → 原始像素
+                med as f64 / (w as f64 / cw as f64)
+            }
+        }
+    };
+
     let elapsed_ms = start.elapsed().as_millis() as u64;
     crate::info!(
-        "相框分析：{}x{} → 分析 {}x{}，内孔 {:.1}%（{}x{} @{},{}），安全内容区 {:.1}% 最大内接 {}x{} @{},{}，{}ms{}",
+        "相框分析：{}x{} → 分析 {}x{}，内孔 {:.1}%（{}x{} @{},{}），安全内容区 {:.1}% 最大内接 {}x{} @{},{}，内孔圆角 {:.0}px，{}ms{}",
         cw, ch, w, h,
         hole_ratio * 100.0, hole_rect.w, hole_rect.h, hole_rect.x, hole_rect.y,
         safe_count as f64 / n as f64 * 100.0, safe.w, safe.h, safe.x, safe.y,
-        elapsed_ms,
-        if long > opts.analysis_max { "（已降采样分析）" } else { "" }
+        corner_radius, elapsed_ms,
+        if long > opts.analysis_max { "（已降采样）" } else { "" }
     );
 
     let model = FrameModel {
@@ -330,6 +396,7 @@ pub fn analyze(pb: &gdk_pixbuf::Pixbuf, opts: AnalyzeOpts) -> Option<Analysis> {
         safe_margin: margin,
         hole: hole_rect,
         safe,
+        corner_radius,
         hole_ratio,
         safe_ratio: safe_count as f64 / n as f64,
         elapsed_ms,

@@ -524,15 +524,20 @@ impl MediaPlayer {
         self.prefetch();
     }
 
-    /// 应用「素材显示比」与「相框外扩百分比」（都以相框/素材中心为基准）
+    /// 应用「素材显示比」「相框外扩百分比」「底图圆角」
     pub fn apply_zoom(self: &Rc<Self>) {
-        let (pct, grow) = {
+        let (pct, grow, radius) = {
             let cfg = self.state.config.borrow();
-            (cfg.frame.zoom.min(100), cfg.frame.grow_percent.min(50))
+            (
+                cfg.frame.zoom.min(100),
+                cfg.frame.grow_percent.min(50),
+                cfg.frame.corner_radius,
+            )
         };
         if let Some(w) = self.state.window() {
             w.view.set_media_zoom(pct as f64 / 100.0);
             w.view.set_frame_grow(grow as f64 / 100.0);
+            w.view.set_corner_radius(radius);
         }
         crate::debug!("素材显示比 = {pct}%，相框外扩 = {grow}%");
     }

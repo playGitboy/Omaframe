@@ -16,7 +16,15 @@ OUT="${ROOT}/target/visual"
 CFG="${HOME}/.config/omarchy-photo-frame/config.toml"
 MEDIA_ROOT="${PF_TEST_MEDIA:-/tmp/pfm}"
 FRAMES=("$@")
-[ ${#FRAMES[@]} -eq 0 ] && FRAMES=(木纹.png 花环.png 炫彩.png)
+[ ${#FRAMES[@]} -eq 0 ] && FRAMES=(横-木纹.png 横-花环.png 横-炫彩.png)
+
+# 相框名必须真实存在（相框库已被整理成 横-*/竖-* 两组）
+FRAME_DIR="${PF_FRAME_DIR:-$HOME/photo-frame/frame}"
+for f in "${FRAMES[@]}"; do
+  if [ ! -f "$FRAME_DIR/$f" ]; then
+    echo "跳过不存在的相框：$FRAME_DIR/$f" >&2
+  fi
+done
 
 mkdir -p "$OUT" "$MEDIA_ROOT"
 cp "$CFG" /tmp/cfg.visual.bak

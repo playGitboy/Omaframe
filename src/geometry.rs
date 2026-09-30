@@ -332,27 +332,30 @@ fn layout_raw(
         (bb as f64 * k).round().max(1.0) as i32,
     );
 
-    let fw = kl + mw + kr;
-    let fh = kt + mh + kb;
-    let frame = RectI::new(ox, oy, fw, fh);
+    // 目标矩形用**整数累加**：九片必须像拼图一样精确相接。
+    // 浮点坐标光栅化后相邻片之间会留下 1px 缝隙（相框上表现为发丝/交叉细线）。
+    let x0 = ox;
+    let x1 = x0 + kl;
+    let x2 = x1 + mw;
+    let x3 = x2 + kr;
+    let y0 = oy;
+    let y1 = y0 + kt;
+    let y2 = y1 + mh;
+    let y3 = y2 + kb;
+    let frame = RectI::new(x0, y0, x3 - x0, y3 - y0);
     // 媒体矩形 = 中心片目标矩形
-    let media = RectI::new(ox + kl, oy + kt, mw, mh);
-    // 中心片对应源矩形（= 内容区）宽高，供九宫格源切片使用
-    let (cx0, cy0) = (content.x, content.y);
-    let (cx1, cy1) = (content.right(), content.bottom());
-
+    let media = RectI::new(x1, y1, mw, mh);
     let dst = [
-        RectI::new(ox, oy, kl, kt),                                  // TL
-        RectI::new(ox + kl, oy, mw, kt),                             // TOP
-        RectI::new(ox + kl + mw, oy, kr, kt),                        // TR
-        RectI::new(ox, oy + kt, kl, mh),                             // LEFT
-        RectI::new(ox + kl, oy + kt, mw, mh),                        // CENTER
-        RectI::new(ox + kl + mw, oy + kt, kr, mh),                   // RIGHT
-        RectI::new(ox, oy + kt + mh, kl, kb),                        // BL
-        RectI::new(ox + kl, oy + kt + mh, mw, kb),                   // BOTTOM
-        RectI::new(ox + kl + mw, oy + kt + mh, kr, kb),              // BR
+        RectI::new(x0, y0, kl, kt),   // TL
+        RectI::new(x1, y0, mw, kt),   // TOP
+        RectI::new(x2, y0, kr, kt),   // TR
+        RectI::new(x0, y1, kl, mh),   // LEFT
+        RectI::new(x1, y1, mw, mh),   // CENTER
+        RectI::new(x2, y1, kr, mh),   // RIGHT
+        RectI::new(x0, y2, kl, kb),   // BL
+        RectI::new(x1, y2, mw, kb),   // BOTTOM
+        RectI::new(x2, y2, kr, kb),   // BR
     ];
-    let _ = (cx0, cy0, cx1, cy1);
     FrameLayout { frame, media, dst, corner_scale: k }
 }
 

@@ -132,6 +132,8 @@ pub struct FrameConfig {
     pub grow_percent: u8,
     /// 调试浮层（持久化，重启后保持）
     pub debug_hud: bool,
+    /// 底图（图片/视频）圆角半径：-1 = 跟随相框内孔圆角；0 = 关闭；>0 = 固定像素
+    pub corner_radius: i32,
     /// 相框适配模式：
     /// - `smart`（默认）：智能九宫格 —— 相框可横可竖、四角不变形、素材铺满内孔（不裁切）
     /// - `cover`：保持相框原始比例，素材按 cover 裁切填满（老行为）
@@ -216,6 +218,7 @@ impl Default for FrameConfig {
             style: String::new(),
             zoom: 100,
             grow_percent: 3,
+            corner_radius: -1,
             fit: "smart".into(),
             debug_hud: false,
             path: String::new(),
@@ -336,6 +339,7 @@ impl Config {
                 .unwrap_or_else(|| self.frame.style.clone());
             self.frame.style = name;
         }
+        self.frame.corner_radius = self.frame.corner_radius.clamp(-1, 400);
         self.frame.fit = match self.frame.fit.trim().to_ascii_lowercase().as_str() {
             "cover" | "fill" => "cover".into(),
             _ => "smart".into(), // contain / smart / 空 / 未知 → smart

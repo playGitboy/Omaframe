@@ -68,6 +68,10 @@ mod imp {
         pub frame_slices: RefCell<Option<Rc<crate::frame::FrameSlices>>>,
         /// 最近一次 geometry() 用的九宫格布局（绘制时复用，避免重复计算）
         pub layout: Cell<Option<crate::geometry::FrameLayout>>,
+        /// 最近一次 geometry() 算出的媒体矩形（控件定位、圆角裁剪都用它）
+        pub media_rect: Cell<(i32, i32, i32, i32)>,
+        /// 底图圆角半径（像素，<=0 = 不圆角）
+        pub corner_radius: Cell<i32>,
         /// 内孔遮罩（cairo surface：alpha=255 处允许显示媒体），把媒体擦成内孔形状
         pub frame_mask: RefCell<Option<Rc<cairo::ImageSurface>>>,
         pub press_x: Cell<f64>,
@@ -160,13 +164,10 @@ mod imp {
                     let cr = snapshot.append_cairo(&rect);
                     let _ = cr.save();
                     cr.set_operator(cairo::Operator::DestOut);
+                    // 与相框切片使用完全相同的整数矩形 → 擦除边界与绘制边界严格对齐
                     cr.set_antialias(cairo::Antialias::None);
-                    let bleed = 0.5;
-                    cr.translate(d.x as f64 - bleed, d.y as f64 - bleed);
-                    cr.scale(
-                        (d.w as f64 + bleed * 2.0) / sw_ as f64,
-                        (d.h as f64 + bleed * 2.0) / sh_ as f64,
-                    );
+                    cr.translate(d.x as f64, d.y as f64);
+                    cr.scale(d.w as f64 / sw_ as f64, d.h as f64 / sh_ as f64);
                     let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
                     let pat = cr.source();
                     let _ = pat.set_filter(cairo::Filter::Good);
@@ -193,13 +194,11 @@ mod imp {
                     let _ = cr.save();
                     // 关键：路径**不做抗锯齿**。否则每片边缘会被半透明化，
                     // 相邻片之间就会出现一条发丝细缝（用户在花环相框上看到"绘制的线条"）。
+                    // 目标矩形已经是整数且精确相接 → 关闭路径抗锯齿即可无缝。
+                    // 注意：**不能**再做像素级外扩，那会遮住相邻切片、形成硬边线。
                     cr.set_antialias(cairo::Antialias::None);
-                    // 0.5px 外扩：即使坐标取整有误差，也让相邻片轻微重叠而不是留缝
-                    let bleed = 0.5;
-                    cr.translate(d.x as f64 - bleed, d.y as f64 - bleed);
-                    let sx = (d.w as f64 + bleed * 2.0) / sw_ as f64;
-                    let sy = (d.h as f64 + bleed * 2.0) / sh_ as f64;
-                    cr.scale(sx, sy);
+                    cr.translate(d.x as f64, d.y as f64);
+                    cr.scale(d.w as f64 / sw_ as f64, d.h as f64 / sh_ as f64);
                     let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
                     let pat = cr.source();
                     let _ = pat.set_filter(cairo::Filter::Good);
@@ -235,8 +234,17 @@ mod imp {
                     cr.set_dash(&[], 0.0);
                 }
 
-                // 悬停控制层
-                let layout_ctl = ControlLayout::new(fw, fh);
+                // 悬停控制层（播放/暂停按钮落在底图正中）
+                // 媒体矩形要换算成**相对相框左上角**的坐标，命中检测才在同一套系里
+                let (cmx, cmy, cmw, cmh) = self.media_rect.get();
+                let layout_ctl = ControlLayout::with_media(
+                    fw,
+                    fh,
+                    (cmx - fx) as f64,
+                    (cmy - fy) as f64,
+                    cmw as f64,
+                    cmh as f64,
+                );
                 snapshot.save();
                 snapshot.translate(&gtk::graphene::Point::new(fx as f32, fy as f32));
                 let cr = snapshot.append_cairo(&frame_rect);
@@ -306,6 +314,9 @@ mod imp {
             }
             snapshot.restore();
 
+            // 底图圆角：把四角擦掉（图片/视频通用，且是抗锯齿的）
+            self.paint_corner_cutouts(snapshot, mx, my, mw, mh);
+
             // 用遮罩把媒体**擦成内孔形状**：外部透明缺口（异形轮廓）与相框不透明处都不显示媒体。
             // 遮罩边缘做过 1px 羽化 → 与相框自然衔接（半透明渐变观感）。
             let mask_guard = self.frame_mask.borrow();
@@ -333,8 +344,16 @@ mod imp {
                 snapshot.append_texture(frame, &frame_rect);
             }
 
-            // 悬停控制层（以相框矩形为基准）
-            let layout = ControlLayout::new(fw, fh);
+            // 悬停控制层（播放/暂停按钮落在底图正中）
+            let (cmx, cmy, cmw, cmh) = self.media_rect.get();
+            let layout = ControlLayout::with_media(
+                fw,
+                fh,
+                (cmx - fx) as f64,
+                (cmy - fy) as f64,
+                cmw as f64,
+                cmh as f64,
+            );
             snapshot.save();
             snapshot.translate(&gtk::graphene::Point::new(fx as f32, fy as f32));
             let cr = snapshot.append_cairo(&frame_rect);
@@ -366,7 +385,94 @@ fn debug_overlay_enabled() -> bool {
     })
 }
 
+/// 构造"圆角缺口"路径：整块矩形 **减去** 内接的圆角矩形（偶奇填充 → 只剩四个角）。
+///
+/// 用 `fill` 配合 `Operator::DestOut` 即可把底图四角擦成圆角（图片/视频通用）。
+/// 这样画比"四个角分别拼路径"更不容易出错：只要保证**两个子路径方向相反**，
+/// 偶奇规则就只会填到四角 ✓（单位测试会验证）。
+pub fn corner_cutout_path(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    let r = r.max(0.0).min(w / 2.0).min(h / 2.0);
+    if r < 0.5 {
+        return;
+    }
+    // 每一角 = 直角方块(r×r) 减去 四分之一圆；偶奇填充后正好剩"该擦的角"
+    let pi = std::f64::consts::PI;
+    for (cx, cy, sx, sy) in [
+        (x, y, 1.0f64, 1.0f64),
+        (x + w, y, -1.0, 1.0),
+        (x, y + h, 1.0, -1.0),
+        (x + w, y + h, -1.0, -1.0),
+    ] {
+        // 直角方块的两条边（从角点出发）
+        cr.move_to(cx, cy);
+        cr.line_to(cx + sx * r, cy);
+        cr.line_to(cx, cy + sy * r);
+        cr.close_path();
+        // 四分之一圆（与上面两条边端点重合，偶奇规则下相互抵消）
+        cr.new_sub_path();
+        let (ax, ay) = (cx + sx * r, cy + sy * r);
+        let (a0, a1) = if sx > 0.0 {
+            (pi, pi * 1.5)
+        } else {
+            (0.0, pi * 0.5)
+        };
+        let (a0, a1) = if sy > 0.0 { (a0, a1) } else { (a1 + pi, a0 + pi) };
+        cr.arc(ax, ay, r, a0, a1);
+        cr.close_path();
+    }
+    // ③ 用"反向"填充规则：外框减去内框
+    cr.set_fill_rule(cairo::FillRule::EvenOdd);
+}
+
 impl imp::MediaView {
+    /// 底图圆角：把四角擦掉（图片/视频通用，都在媒体绘制之后用 DestOut）
+    fn paint_corner_cutouts(
+        &self,
+        snapshot: &gtk::Snapshot,
+        mx: i32,
+        my: i32,
+        mw: i32,
+        mh: i32,
+    ) {
+        if mw <= 2 || mh <= 2 {
+            return;
+        }
+        let r = self.effective_corner_radius(mw, mh);
+        if r < 1.0 {
+            return;
+        }
+        let rect = gtk::graphene::Rect::new(mx as f32, my as f32, mw as f32, mh as f32);
+        let cr = snapshot.append_cairo(&rect);
+        let _ = cr.save();
+        cr.set_operator(cairo::Operator::DestOut);
+        // 圆角要平滑 → 这里**开**抗锯齿（与切片填充相反：切片边界要硬，圆角要柔）
+        cr.set_antialias(cairo::Antialias::Default);
+        corner_cutout_path(&cr, mx as f64, my as f64, mw as f64, mh as f64, r);
+        let _ = cr.fill();
+        let _ = cr.restore();
+    }
+
+    /// 当前底图圆角半径（像素）
+    /// - 配置 >0：直接用
+    /// - 配置 -1（跟随相框）：内孔圆角 × 九宫格缩放系数
+    /// - 配置 0：关闭
+    fn effective_corner_radius(&self, media_w: i32, media_h: i32) -> f64 {
+        let cfg = self.corner_radius.get();
+        if cfg > 0 {
+            return cfg as f64;
+        }
+        if cfg == 0 {
+            return 0.0;
+        }
+        let Some(sl) = self.frame_slices.borrow().clone() else {
+            return 0.0;
+        };
+        let k = self.layout.get().map(|l| l.corner_scale).unwrap_or(1.0);
+        let r = sl.model.corner_radius * k;
+        r.min(media_w.min(media_h) as f64 / 2.0).max(0.0)
+    }
+
+
     /// (相框 x,y,w,h, 媒体 x,y,w,h)，单位 px，控件（=屏幕）坐标
     #[allow(clippy::type_complexity)]
     pub fn geometry(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
@@ -430,6 +536,8 @@ impl imp::MediaView {
             self.layout.set(Some(layout));
             let f = layout.frame;
             let m = layout.media;
+            // 控件（播放/暂停按钮）要用媒体矩形定位，必须在 return 前写入缓存
+            self.media_rect.set((m.x, m.y, m.w.max(1), m.h.max(1)));
             return (f.x, f.y, f.w, f.h, m.x, m.y, m.w, m.h);
         }
         self.layout.set(None);
@@ -486,6 +594,9 @@ impl imp::MediaView {
                 crate::geometry::place_media(fx, fy, fw, fh, iw, ih, self.media_zoom.get())
             }
         };
+        // 媒体矩形缓存（控件定位、圆角裁剪都用它）
+        self.media_rect.set((mx, my, mw.max(1), mh.max(1)));
+
         // 几何变化时记一条调试日志（尺寸不变就不记，避免每帧刷屏）
         let key = ((fw as u64) << 48)
             | ((fh as u64) << 32)
@@ -513,6 +624,12 @@ glib::wrapper! {
 }
 
 impl MediaView {
+    /// 底图圆角半径：-1 跟随相框 / 0 关闭 / >0 固定像素
+    pub fn set_corner_radius(&self, r: i32) {
+        self.imp().corner_radius.set(r);
+        self.queue_draw();
+    }
+
     pub fn new() -> Self {
         let view: Self = glib::Object::builder().build();
         view.imp().media_zoom.set(1.0);
@@ -630,7 +747,15 @@ impl MediaView {
                 return;
             }
             let (fx, fy, fw, fh) = v.hit_rect_now();
-            let layout = ControlLayout::new(fw as i32, fh as i32);
+            let (mx, my, mw, mh) = imp.media_rect.get();
+            let layout = ControlLayout::with_media(
+                fw as i32,
+                fh as i32,
+                (mx - fx as i32) as f64,
+                (my - fy as i32) as f64,
+                mw as f64,
+                mh as f64,
+            );
             let zone = layout.hit(x - fx, y - fy);
             if zone == HitZone::None {
                 return;
@@ -646,7 +771,15 @@ impl MediaView {
 
     fn update_zone(&self, x: f64, y: f64) {
         let (fx, fy, fw, fh) = self.hit_rect_now();
-        let layout = ControlLayout::new(fw as i32, fh as i32);
+        let (mx, my, mw, mh) = self.imp().media_rect.get();
+        let layout = ControlLayout::with_media(
+            fw as i32,
+            fh as i32,
+            (mx - fx as i32) as f64,
+            (my - fy as i32) as f64,
+            mw as f64,
+            mh as f64,
+        );
         let zone = layout.hit(x - fx, y - fy);
         // 控制层显隐**以指针实际位置为准**（而不只靠 enter/leave）：
         // 只要指针移出相框矩形就收起。
@@ -884,5 +1017,77 @@ impl MediaView {
 impl Default for MediaView {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 圆角缺口路径：填充后四角 alpha 应被擦掉，四边中心保持不透明
+    #[test]
+    fn corner_cutout_erases_only_the_corners() {
+        let (w, h, r) = (100i32, 80i32, 20.0f64);
+        let data = vec![255u8; (w * h * 4) as usize];
+        let mut surf = cairo::ImageSurface::create_for_data(
+            data,
+            cairo::Format::ARgb32,
+            w,
+            h,
+            w * 4,
+        )
+        .unwrap();
+        {
+            let cr = cairo::Context::new(&surf).unwrap();
+            cr.set_operator(cairo::Operator::DestOut);
+            cr.set_antialias(cairo::Antialias::Default);
+            corner_cutout_path(&cr, 0.0, 0.0, w as f64, h as f64, r);
+            cr.fill().unwrap();
+        }
+        surf.flush();
+        let stride = surf.stride() as usize;
+        let data = surf.data().expect("读回 surface 数据");
+        let bytes: &[u8] = &data;
+        let alpha = |x: i32, y: i32| -> u8 {
+            let o = (y as usize) * stride + (x as usize) * 4 + 3;
+            bytes[o]
+        };
+        // 四角被擦掉
+        assert!(alpha(0, 0) < 40, "左上角应被擦掉: {}", alpha(0, 0));
+        assert!(alpha(w - 1, 0) < 40, "右上角应被擦掉: {}", alpha(w - 1, 0));
+        assert!(alpha(0, h - 1) < 40, "左下角应被擦掉: {}", alpha(0, h - 1));
+        assert!(alpha(w - 1, h - 1) < 40, "右下角应被擦掉: {}", alpha(w - 1, h - 1));
+        // 边中心保持
+        assert!(alpha(w / 2, 0) > 200, "上边中心应保留");
+        assert!(alpha(0, h / 2) > 200, "左边中心应保留");
+        assert!(alpha(w / 2, h - 1) > 200, "下边中心应保留");
+        assert!(alpha(w - 1, h / 2) > 200, "右边中心应保留");
+        // 圆角内侧（沿对角线）应该是通的
+        let diag = alpha((r as i32) + 2, (r as i32) + 2);
+        assert!(diag > 200, "圆角内侧应保留（圆角不能切太狠）: {diag}");
+    }
+
+    #[test]
+    fn corner_cutout_zero_radius_is_noop() {
+        let (w, h) = (40i32, 40i32);
+        let mut surf = cairo::ImageSurface::create_for_data(
+            vec![255u8; (w * h * 4) as usize],
+            cairo::Format::ARgb32,
+            w,
+            h,
+            w * 4,
+        )
+        .unwrap();
+        {
+            let cr = cairo::Context::new(&surf).unwrap();
+            cr.set_operator(cairo::Operator::DestOut);
+            corner_cutout_path(&cr, 0.0, 0.0, w as f64, h as f64, 0.0);
+            cr.fill().unwrap();
+        }
+        surf.flush();
+        let data = surf.data().expect("读回 surface 数据");
+        let bytes: &[u8] = &data;
+        let alpha0 = bytes[3];
+        assert!(alpha0 > 200, "半径 0 时不应擦任何像素，实际 {alpha0}");
     }
 }
