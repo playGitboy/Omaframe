@@ -252,7 +252,7 @@ impl VideoPlayer {
         let playing_flag = self.playing_flag.clone();
         PLAYER.with(|p| *p.borrow_mut() = Some(self.clone()));
         std::thread::Builder::new()
-            .name("photo-frame-video".into())
+            .name("omaframe-video".into())
             .spawn(move || {
                 // 读线程只做 I/O + 裸数据搬运；所有 GTK/状态操作切回主线程
                 let mut reader = stdout;

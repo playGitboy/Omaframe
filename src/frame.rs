@@ -285,6 +285,8 @@ fn pixbuf_rect_to_surface(
     pb: &gdk_pixbuf::Pixbuf,
     r: crate::geometry::RectI,
 ) -> Option<std::rc::Rc<cairo::ImageSurface>> {
+    // 源矩形保持精确（不能填充：填充会让相框与遮罩错位）。
+    // 边界"发丝线"由绘制时的 Extend::Pad 解决（见 media_view）。
     let (x0, y0) = (r.x.max(0), r.y.max(0));
     if x0 >= pb.width() || y0 >= pb.height() {
         return None;
@@ -334,6 +336,7 @@ fn pixbuf_gray_rect_to_surface(
     pb: &gdk_pixbuf::Pixbuf,
     r: crate::geometry::RectI,
 ) -> Option<std::rc::Rc<cairo::ImageSurface>> {
+    // 与相框切片**完全一致**的源矩形（精确，不填充）→ 两者永远对齐
     let (x0, y0) = (r.x.max(0), r.y.max(0));
     if x0 >= pb.width() || y0 >= pb.height() {
         return None;

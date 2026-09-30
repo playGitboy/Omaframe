@@ -60,7 +60,7 @@ impl MediaLibrary {
         let source = self.source.borrow().clone();
         let ctx = self.ctx.clone();
         std::thread::Builder::new()
-            .name("photo-frame-scan".into())
+            .name("omaframe-scan".into())
             .spawn(move || {
                 let result: Result<Vec<MediaItem>, String> = match source.scan() {
                     Ok(items) => Ok(items),

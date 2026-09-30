@@ -49,13 +49,13 @@ static SINK: OnceLock<Mutex<Sink>> = OnceLock::new();
 pub fn init(state_dir: &std::path::Path, level: Level) {
     let dir = state_dir.join("logs");
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("photo-frame.log");
+    let path = dir.join("omaframe.log");
 
     // 轮转：超过 1MB 时把旧文件挪成 .1
     let mut file = None;
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > MAX_LOG_BYTES {
-            let _ = std::fs::rename(&path, dir.join("photo-frame.log.1"));
+            let _ = std::fs::rename(&path, dir.join("omaframe.log.1"));
         }
     }
     match OpenOptions::new().create(true).append(true).open(&path) {

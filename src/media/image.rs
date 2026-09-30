@@ -124,7 +124,7 @@ impl ImageService {
         {
             let ctx = ctx.clone();
             std::thread::Builder::new()
-                .name("photo-frame-decode".into())
+                .name("omaframe-decode".into())
                 .spawn(move || {
                     while let Ok(job) = job_rx.recv() {
                         let result = match job {

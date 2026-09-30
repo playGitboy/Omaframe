@@ -33,7 +33,7 @@ impl FrameWindow {
         let window = gtk::Window::new();
         // 必须挂到 Application 上，否则 GApplication 看不到任何窗口会立即退出
         window.set_application(Some(app));
-        window.set_title(Some("photo-frame"));
+        window.set_title(Some("omaframe"));
 
         // 窗口底色必须显式透明：layer surface 一旦被 GTK 标记为不透明，
         // 相框 PNG 的透明处（内孔、圆角外）就会露出主题背景色 —— 用户看到的是"黑色"。
@@ -49,7 +49,7 @@ impl FrameWindow {
                 box-shadow: none;
                 border-style: none;
             }
-            .photo-frame-view {
+            .omaframe-view {
                 background-color: transparent;
                 background-image: none;
             }
@@ -77,7 +77,7 @@ impl FrameWindow {
         root.set_child(Some(&view));
 
         let hud = if std::env::var_os("PHOTO_FRAME_DEBUG").is_some() {
-            let label = gtk::Label::new(Some("photo-frame"));
+            let label = gtk::Label::new(Some("omaframe"));
             label.set_halign(gtk::Align::Start);
             label.set_valign(gtk::Align::Start);
             label.set_margin_start(8);
@@ -120,7 +120,7 @@ impl FrameWindow {
             Backend::LayerShell => {
                 self.window.init_layer_shell();
                 self.window.set_layer(Layer::Bottom);
-                self.window.set_namespace(Some("photo-frame"));
+                self.window.set_namespace(Some("omaframe"));
                 // 关键：不要任何键盘交互 → 桌面快捷键永不受影响
                 self.window.set_keyboard_mode(KeyboardMode::None);
                 self.window.set_exclusive_zone(0);
@@ -222,7 +222,7 @@ impl FrameWindow {
         let mut hud = self.hud.borrow_mut();
         match (on, hud.is_some()) {
             (true, false) => {
-                let label = gtk::Label::new(Some("photo-frame"));
+                let label = gtk::Label::new(Some("omaframe"));
                 label.set_halign(gtk::Align::Start);
                 label.set_valign(gtk::Align::Start);
                 label.set_margin_start(8);
@@ -247,7 +247,7 @@ impl FrameWindow {
             let (fw, fh) = self.view.frame_size();
             let (mw, mh) = self.view.media_size();
             hud.set_text(&format!(
-                "photo-frame\nbackend: {}\nmonitor: {}\nframe: {fx},{fy} {fw}x{fh}\nmedia: {mw}x{mh} (max {}x{})\n{}",
+                "omaframe\nbackend: {}\nmonitor: {}\nframe: {fx},{fy} {fw}x{fh}\nmedia: {mw}x{mh} (max {}x{})\n{}",
                 state.backend.as_str(),
                 cfg.window.monitor,
                 cfg.display.max_width,

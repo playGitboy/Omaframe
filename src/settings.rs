@@ -6,7 +6,7 @@
 //!   （焦点变化靠 Hyprland IPC 事件判定：见 `hypr::on_focus_change`）
 //! - 隐藏即**销毁**窗口：下次打开看到的一定是最新配置（拖动改过的宽高会立刻反映出来）
 //!
-//! - `photo-frame settings` → 若已有实例在跑，通过 `$XDG_RUNTIME_DIR` 下的
+//! - `omaframe settings` → 若已有实例在跑，通过 `$XDG_RUNTIME_DIR` 下的
 //!   Unix socket 通知它开面板；否则直接以设置模式启动。
 
 use crate::app::AppState;
@@ -82,6 +82,10 @@ pub fn show(state: &Rc<AppState>) {
             return;
         }
     }
+    // 打开前**重新读取配置文件**：外部改过 config.toml 时，面板里的数值/下拉项也要跟着变
+    if state.reload_from_disk() {
+        apply_reloaded(state);
+    }
     hide(state, "重建");
     let panel = build(state);
     panel.win.present();
@@ -128,6 +132,18 @@ pub fn hide_if_open(state: &Rc<AppState>, payload: &str) {
 thread_local! {
     /// 上一次焦点事件负载（用于去重 Hyprland 补发的同值事件）
     static LAST_FOCUS: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// 配置从磁盘重读后，把"会立刻影响观感"的几项重新应用到运行中的窗口
+fn apply_reloaded(state: &Rc<AppState>) {
+    let player = state.player.borrow().clone();
+    let Some(p) = player else { return };
+    p.load_frame();
+    p.apply_zoom();
+    if let Some(w) = state.window() {
+        w.update_hud(state, "");
+    }
+    p.refresh_visibility_rect();
 }
 
 /// 状态栏图标点击 = 开关
@@ -194,9 +210,9 @@ pub fn serve_control(state: Rc<AppState>) {
                 let mut buf = [0u8; 64];
                 let n = s.read(&mut buf).unwrap_or(0);
                 let cmd = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-                // 控制命令（供 `photo-frame settings`、快捷键绑定、测试脚本用）
+                // 控制命令（供 `omaframe settings`、快捷键绑定、测试脚本用）
                 // 语义要分清：show/hide 幂等，toggle 才是开关
-                // （`photo-frame settings` 发的是 "settings"，用开关语义）
+                // （`omaframe settings` 发的是 "settings"，用开关语义）
                 let action: Option<fn(&Rc<AppState>)> = match cmd.as_str() {
                     "settings" | "toggle" => Some(toggle),
                     "show" | "open" => Some(show),
@@ -523,25 +539,6 @@ fn build(state: &Rc<AppState>) -> Panel {
         g_frame.add(&combo);
     }
 
-    // 素材显示比：以相框中心为基准缩放照片/视频
-    {
-        let init = state.config.borrow().frame.zoom.min(100) as f64;
-        let adj = gtk::Adjustment::new(init, 0.0, 100.0, 1.0, 10.0, 0.0);
-        let row = adw::SpinRow::builder()
-            .title("显示比")
-            .subtitle("相对相框内孔的素材显示百分比（以相框中心缩放）")
-            .adjustment(&adj)
-            .build();
-        let st = state.clone();
-        adj.connect_value_changed(move |a| {
-            let v = a.value().round().clamp(0.0, 100.0) as u8;
-            st.update(|c| c.frame.zoom = v);
-            if let Some(p) = st.player.borrow().as_ref() {
-                p.apply_zoom();
-            }
-        });
-        g_frame.add(&row);
-    }
     page.add(&g_frame);
 
     // ---------------- 位置 ----------------

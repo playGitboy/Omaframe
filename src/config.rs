@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub const APP_ID: &str = "dev.sen.photo-frame";
-pub const CONFIG_SUBDIR: &str = "omarchy-photo-frame";
+pub const APP_ID: &str = "dev.sen.omaframe";
+pub const CONFIG_SUBDIR: &str = "omarchy-omaframe";
 pub const CONFIG_FILE: &str = "config.toml";
 
 pub fn home_dir() -> PathBuf {
@@ -126,14 +126,10 @@ pub struct FrameConfig {
     pub enabled: bool,
     /// 相框样式：程序目录 `frame/` 下的 PNG 文件名（如 `木纹.png`）；空 = 不加相框
     pub style: String,
-    /// 素材显示比（0-100，100 = 铺满相框内孔）
-    pub zoom: u8,
     /// 相框相对素材的外扩百分比（默认 5 = 相框每边大 2.5%，四周居中）
     pub grow_percent: u8,
     /// 调试浮层（持久化，重启后保持）
     pub debug_hud: bool,
-    /// 底图（图片/视频）圆角半径：-1 = 跟随相框内孔圆角；0 = 关闭；>0 = 固定像素
-    pub corner_radius: i32,
     /// 相框适配模式：
     /// - `smart`（默认）：智能九宫格 —— 相框可横可竖、四角不变形、素材铺满内孔（不裁切）
     /// - `cover`：保持相框原始比例，素材按 cover 裁切填满（老行为）
@@ -216,9 +212,7 @@ impl Default for FrameConfig {
             enabled: false,
             desktop_enabled: true,
             style: String::new(),
-            zoom: 100,
             grow_percent: 3,
-            corner_radius: -1,
             fit: "smart".into(),
             debug_hud: false,
             path: String::new(),
@@ -339,12 +333,10 @@ impl Config {
                 .unwrap_or_else(|| self.frame.style.clone());
             self.frame.style = name;
         }
-        self.frame.corner_radius = self.frame.corner_radius.clamp(-1, 400);
         self.frame.fit = match self.frame.fit.trim().to_ascii_lowercase().as_str() {
             "cover" | "fill" => "cover".into(),
             _ => "smart".into(), // contain / smart / 空 / 未知 → smart
         };
-        self.frame.zoom = self.frame.zoom.min(100);
         self.frame.grow_percent = self.frame.grow_percent.min(50);
     }
 }

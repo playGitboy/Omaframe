@@ -529,6 +529,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "omaframe"
+version = "0.1.0"
+dependencies = [
+ "cairo-rs",
+ "gdk-pixbuf",
+ "gdk4",
+ "gio",
+ "glib",
+ "gtk4",
+ "gtk4-layer-shell",
+ "libadwaita",
+ "rand",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+ "walkdir",
+]
+
+[[package]]
 name = "pango"
 version = "0.22.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -549,25 +568,6 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps 9.0.0",
-]
-
-[[package]]
-name = "photo-frame"
-version = "0.1.0"
-dependencies = [
- "cairo-rs",
- "gdk-pixbuf",
- "gdk4",
- "gio",
- "glib",
- "gtk4",
- "gtk4-layer-shell",
- "libadwaita",
- "rand",
- "serde",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
- "walkdir",
 ]
 
 [[package]]

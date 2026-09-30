@@ -154,6 +154,23 @@ impl AppState {
         self.dirty.set(true);
     }
 
+    /// **从磁盘重新读一遍配置**（外部改了 config.toml 时用）。
+    ///
+    /// 设置页每次打开都调用它：这样即使配置是被外部修改的（手改文件 / 另一个实例），
+    /// 面板里的数值与下拉项也一定是最新的，而不是内存里的旧值。
+    /// 磁盘上没有可解析的配置时保留内存值，不破坏运行。
+    pub fn reload_from_disk(&self) -> bool {
+        let loaded = self.manager.load();
+        let fresh = loaded.config; // ConfigManager::load 总是给出默认配置
+        let mut cur = self.config.borrow_mut();
+        if *cur == fresh {
+            return false;
+        }
+        crate::debug!("设置页打开：从磁盘重读配置（{}）", fresh.source.path);
+        *cur = fresh;
+        true
+    }
+
     /// 把内存中的配置写盘
     pub fn commit(&self) {
         let cfg = self.config.borrow();
@@ -172,11 +189,11 @@ impl AppState {
 }
 
 const USAGE: &str = "\
-photo-frame — Omarchy 桌面电子相框
+Omaframe — Omarchy 智能自适应 PNG 相框
 
 用法：
-  photo-frame            启动桌面相框
-  photo-frame settings   打开设置窗口（已有实例则通知它打开）
+  omaframe                启动（桌面相框）
+  omaframe settings   打开设置窗口（已有实例则通知它打开）
   photo-frame quit       退出运行中的实例
   photo-frame --help     显示帮助
   photo-frame --version  显示版本

@@ -1,14 +1,14 @@
 [package]
-name = "photo-frame"
+name = "omaframe"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
-description = "Lightweight desktop photo frame for Omarchy (Wayland / Hyprland / GTK4)"
+description = "Omaframe — 智能自适应 PNG 相框：自动分析透明区域，按素材比例重构相框（Wayland / Hyprland / GTK4）"
 license = "MIT"
 publish = false
 
 [[bin]]
-name = "photo-frame"
+name = "omaframe"
 path = "src/main.rs"
 
 [dependencies]

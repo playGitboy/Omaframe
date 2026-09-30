@@ -282,23 +282,7 @@ pub fn layout_adaptive(
     grow: f64,
     max_frame: (i32, i32),
 ) -> FrameLayout {
-    let l = layout_raw(origin, canvas, content, media_w, media_h, grow);
-    let mut s = 1.0f64;
-    if max_frame.0 > 0 && l.frame.w > max_frame.0 {
-        s = s.min(max_frame.0 as f64 / l.frame.w as f64);
-    }
-    if max_frame.1 > 0 && l.frame.h > max_frame.1 {
-        s = s.min(max_frame.1 as f64 / l.frame.h as f64);
-    }
-    if s < 0.999 {
-        // 用 floor 而不是 round：宁可小 1px，也不要因为取整而超出上限
-        let (mw, mh) = (
-            ((media_w.max(1) as f64 * s).floor() as i32).max(16),
-            ((media_h.max(1) as f64 * s).floor() as i32).max(16),
-        );
-        return layout_raw(origin, canvas, content, mw, mh, grow);
-    }
-    l
+    layout_raw(origin, canvas, content, media_w, media_h, grow, max_frame)
 }
 
 fn layout_raw(
@@ -308,52 +292,76 @@ fn layout_raw(
     media_w: i32,
     media_h: i32,
     grow: f64,
+    max_frame: (i32, i32),
 ) -> FrameLayout {
     let (ox, oy) = origin;
-    let mw = media_w.max(1);
-    let mh = media_h.max(1);
     let g = if grow.is_finite() { grow.clamp(0.0, 0.5) } else { 0.0 };
+    let (mw, mh) = (media_w.max(1) as f64, media_h.max(1) as f64);
 
-    // 源边框（相框 PNG 里内容区到画布四边的距离），至少 1px
-    let bl = content.x.max(1);
-    let bt = content.y.max(1);
-    let br = (canvas.w - content.right()).max(1);
-    let bb = (canvas.h - content.bottom()).max(1);
+    // 边框在原图里的占比（内容区 → 画布边缘），随 k 一起缩放
+    let bl = content.x.max(1) as f64;
+    let bt = content.y.max(1) as f64;
+    let br = (canvas.w - content.right()).max(1) as f64;
+    let bb = (canvas.h - content.bottom()).max(1) as f64;
+    let cw = content.w.max(1) as f64;
+    let ch = content.h.max(1) as f64;
 
-    // 统一缩放系数：让边框至少达到设计比例，再叠加 grow
-    let kx = mw as f64 / content.w.max(1) as f64;
-    let ky = mh as f64 / content.h.max(1) as f64;
-    let k = kx.max(ky) * (1.0 + g);
+    // ① 先给边框留出空间：素材可用尺寸 = 上限盒 ÷ (1 + 该轴边框占比) ÷ (1 + grow)
+    let (mut tw, mut th) = (mw, mh);
+    if max_frame.0 > 0 && max_frame.1 > 0 {
+        let (ax, ay) = (
+            max_frame.0 as f64 / (1.0 + (bl + br) / cw) / (1.0 + g),
+            max_frame.1 as f64 / (1.0 + (bt + bb) / ch) / (1.0 + g),
+        );
+        // 保持素材比例往里收
+        let s = (ax / mw).min(ay / mh);
+        if s < 1.0 {
+            tw = mw * s;
+            th = mh * s;
+        }
+    }
+    let (tw, th) = (tw.round().max(1.0) as i32, th.round().max(1.0) as i32);
+
+    // ② 统一缩放系数（设计值）：四角同比 → 绝不变形；再被上限盒夹住
+    let k_design = (tw as f64 / cw).max(th as f64 / ch) * (1.0 + g);
+    let mut k = k_design;
+    if max_frame.0 > 0 && bl + br > 0.0 {
+        k = k.min((max_frame.0 as f64 - tw as f64) / (bl + br));
+    }
+    if max_frame.1 > 0 && bt + bb > 0.0 {
+        k = k.min((max_frame.1 as f64 - th as f64) / (bt + bb));
+    }
+    k = k.max(0.0);
 
     let (kl, kt, kr, kb) = (
-        (bl as f64 * k).round().max(1.0) as i32,
-        (bt as f64 * k).round().max(1.0) as i32,
-        (br as f64 * k).round().max(1.0) as i32,
-        (bb as f64 * k).round().max(1.0) as i32,
+        (bl * k).round().max(0.0) as i32,
+        (bt * k).round().max(0.0) as i32,
+        (br * k).round().max(0.0) as i32,
+        (bb * k).round().max(0.0) as i32,
     );
 
     // 目标矩形用**整数累加**：九片必须像拼图一样精确相接。
-    // 浮点坐标光栅化后相邻片之间会留下 1px 缝隙（相框上表现为发丝/交叉细线）。
+    // 浮点坐标光栅化后相邻片之间会留下 1px 缝（相框上表现为发丝/交叉细线）。
     let x0 = ox;
     let x1 = x0 + kl;
-    let x2 = x1 + mw;
+    let x2 = x1 + tw;
     let x3 = x2 + kr;
     let y0 = oy;
     let y1 = y0 + kt;
-    let y2 = y1 + mh;
+    let y2 = y1 + th;
     let y3 = y2 + kb;
     let frame = RectI::new(x0, y0, x3 - x0, y3 - y0);
     // 媒体矩形 = 中心片目标矩形
-    let media = RectI::new(x1, y1, mw, mh);
+    let media = RectI::new(x1, y1, tw, th);
     let dst = [
         RectI::new(x0, y0, kl, kt),   // TL
-        RectI::new(x1, y0, mw, kt),   // TOP
+        RectI::new(x1, y0, tw, kt),   // TOP
         RectI::new(x2, y0, kr, kt),   // TR
-        RectI::new(x0, y1, kl, mh),   // LEFT
-        RectI::new(x1, y1, mw, mh),   // CENTER
-        RectI::new(x2, y1, kr, mh),   // RIGHT
+        RectI::new(x0, y1, kl, th),   // LEFT
+        RectI::new(x1, y1, tw, th),   // CENTER
+        RectI::new(x2, y1, kr, th),   // RIGHT
         RectI::new(x0, y2, kl, kb),   // BL
-        RectI::new(x1, y2, mw, kb),   // BOTTOM
+        RectI::new(x1, y2, tw, kb),   // BOTTOM
         RectI::new(x2, y2, kr, kb),   // BR
     ];
     FrameLayout { frame, media, dst, corner_scale: k }
@@ -459,7 +467,8 @@ mod tests {
         let canvas = RectI::new(0, 0, 2688, 1515);
         let hole = RectI::new(225, 193, 2279, 1170); // 花环实测
         let max = (495, 930);
-        for (mw, mh) in [(523, 930), (930, 523), (700, 900), (1200, 400)] {
+        // 素材尺寸必须 ≤ 上限盒（调用方就是这么给的）
+        for (mw, mh) in [(495, 500), (400, 900), (300, 300), (495, 200), (495, 930)] {
             let l = layout_adaptive((0, 0), canvas, hole, mw, mh, 0.03, max);
             // 允许 1px 取整误差（边框缩放后四舍五入）
             assert!(
@@ -476,6 +485,10 @@ mod tests {
             let want = mw as f64 / mh as f64;
             assert!((l.media.aspect() - want).abs() < 0.02, "缩小后素材变形了");
         }
+        // 素材正好等于上限盒时：边框被夹到 0，外框仍不超过上限
+        let tight = layout_adaptive((0, 0), canvas, hole, 495, 930, 0.03, (495, 930));
+        assert!(tight.frame.w <= 496 && tight.frame.h <= 931,
+            "紧贴上限时外框应 ≤ 上限：{}x{}", tight.frame.w, tight.frame.h);
         // 不限上限时保持原尺寸
         let free = layout_adaptive((0, 0), canvas, hole, 523, 930, 0.0, (0, 0));
         assert_eq!((free.media.w, free.media.h), (523, 930));

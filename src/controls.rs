@@ -167,6 +167,13 @@ impl Controls {
         self.inner.running.get()
     }
 
+    /// 调试：强制"悬停中"（仅临时验证渲染用，验证后删除）
+    #[doc(hidden)]
+    pub fn debug_force_hover(&self) {
+        self.inner.hover.set(true);
+        self.inner.progress.set(1.0);
+    }
+
     pub fn set_hover(&self, inside: bool) {
         if self.inner.hover.replace(inside) != inside {
             if !inside {
