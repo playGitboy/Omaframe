@@ -96,6 +96,20 @@ pub fn show(state: &Rc<AppState>) {
 }
 
 /// 隐藏并**释放**面板（`why` 只用于排查"到底谁把它关了"）
+/// 退出整个应用（`omaframe quit` / 控制通道 quit 命令）。
+///
+/// 先把配置落盘（`AppState::dirty` 为真时），再退出 GTK 主循环，
+/// `app.run()` 就会返回、进程正常退出（比 kill 干净，配置不会丢）。
+pub fn quit(state: &Rc<AppState>) {
+    crate::info!("收到退出命令，正在退出…");
+    if state.dirty.get() {
+        state.commit();
+    }
+    if let Some(app) = gtk::gio::Application::default() {
+        app.quit();
+    }
+}
+
 pub fn hide(state: &Rc<AppState>, why: &str) {
     let taken = state.settings_window.borrow_mut().take();
     if let Some(p) = taken {
@@ -161,8 +175,9 @@ pub fn toggle(state: &Rc<AppState>) {
     }
 }
 
-/// 通知运行中的实例打开设置窗口；成功返回 true
-pub fn request_open() -> bool {
+/// 通知运行中的实例执行某个控制命令（settings/quit 等）；成功返回 true。
+/// 内部函数：把命令写进控制 socket。
+fn send_control(cmd: &str) -> bool {
     let Some(dir) = crate::config::runtime_dir() else {
         return false;
     };
@@ -173,11 +188,21 @@ pub fn request_open() -> bool {
     match std::os::unix::net::UnixStream::connect(&path) {
         Ok(mut s) => {
             use std::io::Write;
-            let _ = s.write_all(b"settings\n");
+            let _ = s.write_all(format!("{cmd}\n").as_bytes());
             true
         }
         Err(_) => false,
     }
+}
+
+/// 通知运行中的实例打开设置窗口；成功返回 true
+pub fn request_open() -> bool {
+    send_control("settings")
+}
+
+/// 通知运行中的实例退出；成功返回 true
+pub fn request_quit() -> bool {
+    send_control("quit")
 }
 
 // 监听控制 socket（只有主实例做）
@@ -217,6 +242,7 @@ pub fn serve_control(state: Rc<AppState>) {
                     "settings" | "toggle" => Some(toggle),
                     "show" | "open" => Some(show),
                     "hide" | "close" => Some(|st| hide(st, "控制命令")),
+                    "quit" | "exit" => Some(quit),
                     _ => None,
                 };
                 if let Some(action) = action {

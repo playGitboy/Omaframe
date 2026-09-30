@@ -230,7 +230,20 @@ pub fn run(args: &[String]) -> Result<u8, String> {
         crate::info!("已通知运行中的实例打开设置窗口");
         return Ok(0);
     }
+    // `quit`：通过控制通道让**运行中的实例**退出。
+    // 必须在 adw::init()/boot 之前返回 —— 否则本进程会白白启动一整套 GTK+托盘，
+    // 什么也没退掉（旧行为：第二个实例自己开了个窗口就结束，主实例还在跑），
+    // 而且 GIO 会把 "quit" 当成要打开的文件 → "This application can not open files"。
     let quit_only = args.iter().any(|a| a == "quit");
+    if quit_only {
+        if crate::settings::request_quit() {
+            crate::info!("已通知运行中的实例退出");
+            return Ok(0);
+        }
+        // 没有运行中的实例：没有可退的，直接正常结束（不要报 GIO 错误）
+        crate::info!("没有运行中的实例，无需退出");
+        return Ok(0);
+    }
 
     adw::init().map_err(|e| format!("GTK 初始化失败：{e}"))?;
 
@@ -242,9 +255,17 @@ pub fn run(args: &[String]) -> Result<u8, String> {
     let state = AppState::boot();
     crate::settings::serve_control(state.clone());
 
+    // 应用标志：**只保留 NON_UNIQUE**。
+    // GtkApplication/AdwApplication 默认带 HANDLES_OPEN | HANDLES_COMMAND_LINE，
+    // GIO 会把命令行参数当成"要打开的文件" → 传 `quit` 时报
+    // “This application can not open files”。参数我们自己解析（见上），所以
+    // 明确不要这两个标志。
+    let mut app_flags = gio::ApplicationFlags::empty();
+    app_flags.insert(gio::ApplicationFlags::NON_UNIQUE);
+
     let app = adw::Application::builder()
         .application_id(APP_ID)
-        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .flags(app_flags)
         .build();
 
     let app_state = state.clone();
