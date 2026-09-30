@@ -557,14 +557,29 @@ impl MediaPlayer {
         // 优先用内置相框库（程序目录 frame/ 下的 PNG）
         let mut path = String::new();
         if enabled && !style.is_empty() {
-            let p = crate::config::frame_dir().join(&style);
+            let dir = crate::config::frame_dir();
+            let p = dir.join(&style);
             if p.is_file() {
                 path = p.to_string_lossy().into_owned();
+            } else if let Some(found) = resolve_frame_name(&dir, &style) {
+                // 相框库被整理/改名（例如加上 横- / 竖- 前缀）时按名字回退，
+                // 避免"配置里还是旧名字 → 相框静默消失"
+                crate::warn!(
+                    "相框 {} 不存在，自动改用 {}（目录 {}）",
+                    style,
+                    found,
+                    dir.display()
+                );
+                let _ = self.state.edit(|c| {
+                    c.frame.style = found.clone();
+                });
+                self.state.commit();
+                path = dir.join(&found).to_string_lossy().into_owned();
             } else {
                 crate::warn!(
                     "内置相框不存在：{}（目录 {}）",
                     style,
-                    crate::config::frame_dir().display()
+                    dir.display()
                 );
             }
         }
@@ -839,4 +854,32 @@ impl MediaPlayer {
         }));
         self.lib.scan();
     }
+}
+
+
+/// 相框名回退：配置里的名字找不到时，按"去掉/补上 横-、竖- 前缀"再试，
+/// 再不行就用库里第一个 PNG（保证相框不会静默消失）。
+fn resolve_frame_name(dir: &std::path::Path, style: &str) -> Option<String> {
+    let name = style.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let list = || -> Vec<String> { crate::config::list_frame_styles() };
+    // 1) 原名 + 横-/竖- 前缀（木纹.png → 横-木纹.png / 竖-木纹.png）
+    for prefix in ["横-", "竖-"] {
+        let cand = format!("{prefix}{name}");
+        if dir.join(&cand).is_file() {
+            return Some(cand);
+        }
+    }
+    // 2) 去掉已有前缀（木纹.png 已在库里，但配置写成 横-木纹.png 的变体）
+    for prefix in ["横-", "竖-"] {
+        if let Some(stripped) = name.strip_prefix(prefix) {
+            if dir.join(stripped).is_file() {
+                return Some(stripped.to_string());
+            }
+        }
+    }
+    // 3) 库里第一个（按名称排序）
+    list().into_iter().next()
 }
