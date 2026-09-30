@@ -286,8 +286,13 @@ mod imp {
                     cmh as f64,
                 );
                 snapshot.save();
-                snapshot.translate(&gtk::graphene::Point::new(fx as f32, fy as f32));
+                // **先建 cairo 节点，再平移上下文**（顺序不能反）。
+                // append_cairo 的裁剪框取"调用那一刻"的快照变换：此刻只被拖动
+                // 偏移平移过，裁剪框正好落在相框处。若反过来先 translate(fx,fy)
+                // 再 append_cairo，裁剪框变成 (2fx,2fy,fw,fh)，控制层左/上各被
+                // 裁掉 fx/fy -> 相框缩小后按钮中心移进被裁区域 -> 消失或只剩一半。
                 let cr = snapshot.append_cairo(&frame_rect);
+                cr.translate(fx as f64, fy as f64);
                 crate::controls::paint(&cr, &layout_ctl, &self.controls);
                 snapshot.restore();
                 snapshot.restore();
