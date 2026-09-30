@@ -449,7 +449,6 @@ fn build(state: &Rc<AppState>) -> Panel {
     // ---------------- 轮换 ----------------
     let g_slide = adw::PreferencesGroup::builder()
         .title("自动轮换")
-        .description("图片按间隔轮换；视频默认播完整段再切换")
         .build();
     g_slide.add(&switch_row(
         "启用",
@@ -477,7 +476,6 @@ fn build(state: &Rc<AppState>) -> Panel {
     // ---------------- 视频 ----------------
     let g_video = adw::PreferencesGroup::builder()
         .title("视频")
-        .description("由系统 ffmpeg 解码（与系统动态壁纸同一套解码器）")
         .build();
     g_video.add(&switch_row(
         "自动播放",
@@ -505,7 +503,6 @@ fn build(state: &Rc<AppState>) -> Panel {
     // ---------------- 相框 ----------------
     let g_frame = adw::PreferencesGroup::builder()
         .title("相框")
-        .description("透明 PNG 叠在媒体之上")
         .build();
     g_frame.add(&switch_row(
         "启用",
