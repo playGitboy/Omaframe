@@ -303,7 +303,9 @@ fn icon_pixmap_variant() -> glib::Variant {
             .expect("托盘图标 surface");
         {
             let cr = cairo::Context::new(&surface).expect("托盘图标 cairo");
-            cr.set_source_rgba(0.20, 0.22, 0.26, 1.0);
+            // 深板岩色：与顶栏其它系统图标同一色系（深板岩/蓝灰），
+            // 在浅色顶栏上不再"发白"。
+            cr.set_source_rgba(0.16, 0.18, 0.22, 1.0);
             // 圆角矩形边框
             let r = 3.0;
             cr.move_to(r, 0.5);
@@ -318,13 +320,13 @@ fn icon_pixmap_variant() -> glib::Variant {
             cr.close_path();
             cr.fill().ok();
 
-            // 内区（"照片"）：淡色
-            cr.set_source_rgba(0.86, 0.88, 0.92, 1.0);
+            // 内区（"照片"）：中深蓝灰，保持整体偏暗
+            cr.set_source_rgba(0.42, 0.47, 0.55, 1.0);
             cr.rectangle(3.5, 3.5, S as f64 - 7.0, S as f64 - 7.0);
             cr.fill().ok();
 
             // 一个小圆（太阳）
-            cr.set_source_rgba(0.35, 0.45, 0.60, 1.0);
+            cr.set_source_rgba(0.70, 0.74, 0.80, 1.0);
             cr.arc(S as f64 - 7.0, 7.0, 2.0, 0.0, std::f64::consts::TAU);
             cr.fill().ok();
         }
