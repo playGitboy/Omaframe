@@ -89,7 +89,11 @@ impl FrameModel {
     }
 }
 
-/// 分析结果：模型 + 中间掩码（运行时用来生成抗锯齿遮罩，不参与序列化）
+/// 分析结果：模型 + 中间掩码。
+///
+/// `outside` / `hole` 是分析的中间产物（调试与后续 Mesh Warp 会用到），
+/// 遮罩本身只依赖 `model` + PNG 的 alpha，所以这里允许暂时不读。
+#[allow(dead_code)]
 pub struct Analysis {
     pub model: FrameModel,
     /// 分析分辨率下的"外部透明"标记（与边界连通）
@@ -99,7 +103,8 @@ pub struct Analysis {
 }
 
 impl Analysis {
-    /// 分析分辨率尺寸
+    /// 分析分辨率尺寸（调试用）
+    #[allow(dead_code)]
     pub fn dims(&self) -> (i32, i32) {
         (self.model.analysis.w, self.model.analysis.h)
     }

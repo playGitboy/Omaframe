@@ -225,15 +225,25 @@ pub fn clamp_to_screen(x: i32, y: i32, w: i32, h: i32, screen: Bounds) -> (i32, 
     (clamp(x, 0, max_x), clamp(y, 0, max_y))
 }
 
-/// 九宫格切片顺序（TL, TOP, TR, LEFT, CENTER, RIGHT, BL, BOTTOM, BR）
+/// 九宫格切片顺序（TL, TOP, TR, LEFT, CENTER, RIGHT, BL, BOTTOM, BR）。
+/// 命名常量主要是给测试和后续 Mesh 用的（运行时代码用数组下标），所以允许未读。
+#[allow(dead_code)]
 pub const SLICE_TL: usize = 0;
+#[allow(dead_code)]
 pub const SLICE_TOP: usize = 1;
+#[allow(dead_code)]
 pub const SLICE_TR: usize = 2;
+#[allow(dead_code)]
 pub const SLICE_LEFT: usize = 3;
+#[allow(dead_code)]
 pub const SLICE_CENTER: usize = 4;
+#[allow(dead_code)]
 pub const SLICE_RIGHT: usize = 5;
+#[allow(dead_code)]
 pub const SLICE_BL: usize = 6;
+#[allow(dead_code)]
 pub const SLICE_BOTTOM: usize = 7;
+#[allow(dead_code)]
 pub const SLICE_BR: usize = 8;
 
 /// 自适应相框布局：**相框可以变成任意宽高比**，四角保持原始比例。

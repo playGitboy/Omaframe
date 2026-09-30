@@ -479,11 +479,7 @@ mod tests {
     #[test]
     fn no_alpha_png_must_not_panic() {
         let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 64, 48).unwrap();
-        for y in 0..48 {
-            for x in 0..64 {
-                pb.put_pixel(x, y, 255, 255, 255);
-            }
-        }
+        pb.fill(0xffffff00);
         assert!(!pb.has_alpha());
         assert!(build_hole_mask(&pb).is_none(), "无 alpha 图应退回叠图而不是崩溃");
     }
