@@ -48,6 +48,9 @@ s = open(cfg).read()
 s = re.sub(r'(?m)^style = ".*"$', f'style = "{frame}"', s, count=1)
 s = re.sub(r'(?m)^path = ".*"$', f'path = "{root}/{ratio}"', s, count=1)
 s = re.sub(r'(?m)^enabled = false$', 'enabled = true', s)
+# 测试用固定画布上限（脚本结束会整体还原用户配置）
+s = re.sub(r'(?m)^max_width = .*$', 'max_width = 720', s, count=1)
+s = re.sub(r'(?m)^max_height = .*$', 'max_height = 720', s, count=1)
 open(cfg, 'w').write(s)
 PY
     restart

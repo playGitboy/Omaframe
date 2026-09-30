@@ -160,8 +160,13 @@ mod imp {
                     let cr = snapshot.append_cairo(&rect);
                     let _ = cr.save();
                     cr.set_operator(cairo::Operator::DestOut);
-                    cr.translate(d.x as f64, d.y as f64);
-                    cr.scale(d.w as f64 / sw_ as f64, d.h as f64 / sh_ as f64);
+                    cr.set_antialias(cairo::Antialias::None);
+                    let bleed = 0.5;
+                    cr.translate(d.x as f64 - bleed, d.y as f64 - bleed);
+                    cr.scale(
+                        (d.w as f64 + bleed * 2.0) / sw_ as f64,
+                        (d.h as f64 + bleed * 2.0) / sh_ as f64,
+                    );
                     let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
                     let pat = cr.source();
                     let _ = pat.set_filter(cairo::Filter::Good);
@@ -186,8 +191,15 @@ mod imp {
                     );
                     let cr = snapshot.append_cairo(&rect);
                     let _ = cr.save();
-                    cr.translate(d.x as f64, d.y as f64);
-                    cr.scale(d.w as f64 / sw_ as f64, d.h as f64 / sh_ as f64);
+                    // 关键：路径**不做抗锯齿**。否则每片边缘会被半透明化，
+                    // 相邻片之间就会出现一条发丝细缝（用户在花环相框上看到"绘制的线条"）。
+                    cr.set_antialias(cairo::Antialias::None);
+                    // 0.5px 外扩：即使坐标取整有误差，也让相邻片轻微重叠而不是留缝
+                    let bleed = 0.5;
+                    cr.translate(d.x as f64 - bleed, d.y as f64 - bleed);
+                    let sx = (d.w as f64 + bleed * 2.0) / sw_ as f64;
+                    let sy = (d.h as f64 + bleed * 2.0) / sh_ as f64;
+                    cr.scale(sx, sy);
                     let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
                     let pat = cr.source();
                     let _ = pat.set_filter(cairo::Filter::Good);
@@ -379,12 +391,22 @@ impl imp::MediaView {
             // 中心片 = 内孔范围（素材铺满内孔，才不会露一圈桌面）
             let content = sl.model.hole;
             // 先按 (0,0) 算一次拿尺寸 → 夹进屏幕 → 再按最终原点算一次
-            let probe = crate::geometry::layout_adaptive((0, 0), canvas, content, mw, mh, grow);
+            // 上限：配置里的"最大宽度/最大高度"（相框整体不得超过），且不超整块 surface
             let (sfw0, sfh0) = (self.surf_w.get().max(16), self.surf_h.get().max(16));
+            let max_frame = (bw.min(sfw0), bh.min(sfh0));
+            let probe =
+                crate::geometry::layout_adaptive((0, 0), canvas, content, mw, mh, grow, max_frame);
             let fx0 = crate::geometry::clamp(self.frame_x.get(), 0, (sfw0 - probe.frame.w).max(0));
             let fy0 = crate::geometry::clamp(self.frame_y.get(), 0, (sfh0 - probe.frame.h).max(0));
-            let layout =
-                crate::geometry::layout_adaptive((fx0, fy0), canvas, content, mw, mh, grow);
+            let layout = crate::geometry::layout_adaptive(
+                (fx0, fy0),
+                canvas,
+                content,
+                mw,
+                mh,
+                grow,
+                max_frame,
+            );
             self.layout.set(Some(layout));
             let f = layout.frame;
             let m = layout.media;

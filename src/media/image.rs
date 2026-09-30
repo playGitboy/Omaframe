@@ -250,13 +250,72 @@ struct RawImage {
     data: Vec<u8>,
 }
 
+/// 该扩展名是否属于"gdk-pixbuf 常缺 loader"的格式
+fn looks_undecodable(path: &Path, bytes: &[u8]) -> bool {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let by_ext = matches!(ext.as_str(), "heic" | "heif" | "hif" | "avif");
+    // 也可以按魔数判断（ftyp 盒子）
+    let ftyp = bytes.len() > 12 && &bytes[4..8] == b"ftyp";
+    by_ext || ftyp
+}
+
+/// 用外部解码器把图片转成 PNG 字节（ffmpeg 优先，其次 ImageMagick）
+fn external_to_png(path: &Path) -> Option<Vec<u8>> {
+    use std::process::{Command, Stdio};
+    // ffmpeg：-frames:v 1 取首帧，输出 PNG 到 stdout
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok();
+    if let Some(o) = out {
+        if o.status.success() && o.stdout.len() > 16 {
+            return Some(o.stdout);
+        }
+    }
+    // ImageMagick（系统装了 HEIC delegate）
+    let out = Command::new("magick")
+        .arg(path)
+        .arg("png:-")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if out.status.success() && out.stdout.len() > 16 {
+        Some(out.stdout)
+    } else {
+        None
+    }
+}
+
 fn decode_to_bgra(
     path: &Path,
     box_w: i32,
     box_h: i32,
     max_px: i32,
 ) -> Result<RawImage, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    // gdk-pixbuf 读不了（HEIC/HEIF 等）→ 先试系统解码器转成 PNG 再走原流程。
+    // 依赖系统已有的 ffmpeg（视频/系统壁纸同款），失败再试 ImageMagick。
+    let bytes = match std::fs::read(path) {
+        Ok(b) if !looks_undecodable(path, &b) => b,
+        Ok(b) => match external_to_png(path) {
+            Some(png) => {
+                crate::debug!("外部解码器转换成功：{}", path.display());
+                png
+            }
+            None => {
+                crate::warn!("图片解码失败（gdk-pixbuf 与外部解码器都不支持）：{}", path.display());
+                b
+            }
+        },
+        Err(e) => return Err(e.to_string()),
+    };
 
     // 先便宜地探尺寸（只读文件头），自己算出**保持比例**的目标尺寸。
     // 注意：gdk_pixbuf_loader_set_size 会把图**拉伸**到给定尺寸，不会保持比例，

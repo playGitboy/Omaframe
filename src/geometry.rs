@@ -268,7 +268,40 @@ pub struct FrameLayout {
 }
 
 /// 按九宫格模型算出目标布局（纯函数）。
+/// 按九宫格模型算出目标布局（纯函数）。
+///
+/// - `max_frame`：相框外框的尺寸上限（配置里的"最大宽度/最大高度"，0 = 不限制）。
+///   超标时**整体等比缩小**（相框 + 素材一起缩）：素材始终 ≤ 上限、相框不会比设定值大、
+///   而素材比例与四角比例都不变（只是整体变小）。
 pub fn layout_adaptive(
+    origin: (i32, i32),
+    canvas: RectI,
+    content: RectI,
+    media_w: i32,
+    media_h: i32,
+    grow: f64,
+    max_frame: (i32, i32),
+) -> FrameLayout {
+    let l = layout_raw(origin, canvas, content, media_w, media_h, grow);
+    let mut s = 1.0f64;
+    if max_frame.0 > 0 && l.frame.w > max_frame.0 {
+        s = s.min(max_frame.0 as f64 / l.frame.w as f64);
+    }
+    if max_frame.1 > 0 && l.frame.h > max_frame.1 {
+        s = s.min(max_frame.1 as f64 / l.frame.h as f64);
+    }
+    if s < 0.999 {
+        // 用 floor 而不是 round：宁可小 1px，也不要因为取整而超出上限
+        let (mw, mh) = (
+            ((media_w.max(1) as f64 * s).floor() as i32).max(16),
+            ((media_h.max(1) as f64 * s).floor() as i32).max(16),
+        );
+        return layout_raw(origin, canvas, content, mw, mh, grow);
+    }
+    l
+}
+
+fn layout_raw(
     origin: (i32, i32),
     canvas: RectI,
     content: RectI,
@@ -357,7 +390,7 @@ mod tests {
         let content = RectI::new(40, 40, 320, 220);
 
         // 16:9 素材 1600x900
-        let l = layout_adaptive((0, 0), canvas, content, 1600, 900, 0.0);
+        let l = layout_adaptive((0, 0), canvas, content, 1600, 900, 0.0, (0, 0));
         // 边框按统一系数 k = max(1600/320, 900/220) = 5 放大
         assert_eq!(l.corner_scale, 5.0);
         assert_eq!(l.frame.w, 1600 + 200 + 200);
@@ -367,7 +400,7 @@ mod tests {
         assert!(l.frame.w > l.frame.h);
 
         // 9:16 素材 900x1600 → 相框必须变成**竖的**
-        let p = layout_adaptive((0, 0), canvas, content, 900, 1600, 0.0);
+        let p = layout_adaptive((0, 0), canvas, content, 900, 1600, 0.0, (0, 0));
         assert!(p.frame.h > p.frame.w, "竖屏素材应得到竖向相框 {:?}", p.frame);
         assert_eq!(p.media.as_tuple(), (p.dst[SLICE_LEFT].w, p.dst[SLICE_TOP].h, 900, 1600));
         // 竖屏时 k 由高度决定
@@ -375,11 +408,11 @@ mod tests {
         assert!((p.corner_scale - expect_k).abs() < 1e-9);
 
         // 1:1 素材 1000x1000
-        let sq = layout_adaptive((0, 0), canvas, content, 1000, 1000, 0.0);
+        let sq = layout_adaptive((0, 0), canvas, content, 1000, 1000, 0.0, (0, 0));
         assert_eq!(sq.media.as_tuple(), (sq.dst[SLICE_LEFT].w, sq.dst[SLICE_TOP].h, 1000, 1000));
 
         // 21:9 超宽 2100x900：媒体矩形必须严格保持 21:9（不变形）
-        let wide = layout_adaptive((0, 0), canvas, content, 2100, 900, 0.0);
+        let wide = layout_adaptive((0, 0), canvas, content, 2100, 900, 0.0, (0, 0));
         assert_eq!(wide.media.as_tuple(), (wide.dst[SLICE_LEFT].w, wide.dst[SLICE_TOP].h, 2100, 900));
         assert!((wide.media.aspect() - 2100.0 / 900.0).abs() < 1e-9);
         // 外框比素材更宽（多了左右边框），但比例不会再那么极端
@@ -399,7 +432,7 @@ mod tests {
             for (mw, mh) in [
                 (1920, 1080), (1080, 1920), (1200, 1200), (2520, 1080), (600, 1500),
             ] {
-                let l = layout_adaptive((17, 33), canvas, hole, mw, mh, 0.03);
+                let l = layout_adaptive((17, 33), canvas, hole, mw, mh, 0.03, (0, 0));
                 assert_eq!(
                     l.media.as_tuple(),
                     l.dst[SLICE_CENTER].as_tuple(),
@@ -417,6 +450,34 @@ mod tests {
         }
     }
 
+    /// 相框整体不得超出配置上限；素材保持比例且 ≤ 上限
+    #[test]
+    fn frame_respects_max_size_constraint() {
+        let canvas = RectI::new(0, 0, 2688, 1515);
+        let hole = RectI::new(225, 193, 2279, 1170); // 花环实测
+        let max = (495, 930);
+        for (mw, mh) in [(523, 930), (930, 523), (700, 900), (1200, 400)] {
+            let l = layout_adaptive((0, 0), canvas, hole, mw, mh, 0.03, max);
+            // 允许 1px 取整误差（边框缩放后四舍五入）
+            assert!(
+                l.frame.w <= max.0 + 1 && l.frame.h <= max.1 + 1,
+                "相框 {}x{} 超出上限 {:?}",
+                l.frame.w, l.frame.h, max
+            );
+            assert!(
+                l.media.w <= max.0 && l.media.h <= max.1,
+                "素材 {}x{} 超出上限",
+                l.media.w, l.media.h
+            );
+            // 素材比例不能因为缩小而改变
+            let want = mw as f64 / mh as f64;
+            assert!((l.media.aspect() - want).abs() < 0.02, "缩小后素材变形了");
+        }
+        // 不限上限时保持原尺寸
+        let free = layout_adaptive((0, 0), canvas, hole, 523, 930, 0.0, (0, 0));
+        assert_eq!((free.media.w, free.media.h), (523, 930));
+    }
+
     #[test]
     fn corners_keep_their_aspect_ratio() {
         // 四角切片：目标宽高都乘同一个 k → 宽高比与源一致（绝不变形）
@@ -424,7 +485,7 @@ mod tests {
         let content = RectI::new(40, 40, 320, 220);
         let src = slices_src(canvas, content);
         for (media_w, media_h) in [(1600, 900), (900, 1600), (1000, 1000), (2100, 900)] {
-            let l = layout_adaptive((0, 0), canvas, content, media_w, media_h, 0.03);
+            let l = layout_adaptive((0, 0), canvas, content, media_w, media_h, 0.03, (0, 0));
             for idx in [SLICE_TL, SLICE_TR, SLICE_BL, SLICE_BR] {
                 let sa = src[idx].aspect();
                 let da = l.dst[idx].aspect();
@@ -440,7 +501,7 @@ mod tests {
     fn nine_slices_tile_the_frame_without_gaps() {
         let canvas = RectI::new(0, 0, 400, 300);
         let content = RectI::new(40, 40, 320, 220);
-        let l = layout_adaptive((0, 0), canvas, content, 1600, 900, 0.0);
+        let l = layout_adaptive((0, 0), canvas, content, 1600, 900, 0.0, (0, 0));
         // 四角贴住外框
         assert_eq!(l.dst[SLICE_TL].as_tuple(), (0, 0, 200, 200));
         assert_eq!(l.dst[SLICE_BR].right(), l.frame.w);

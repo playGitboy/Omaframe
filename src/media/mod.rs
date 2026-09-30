@@ -95,9 +95,10 @@ pub fn kind_from_extension(path: &std::path::Path) -> Option<MediaKind> {
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())?;
     match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "avif" => {
-            Some(MediaKind::Image)
-        }
+        // heic/heif/hif：iPhone 默认照片格式；gdk-pixbuf 常缺 loader，
+        // 解码时走外部解码器回退（见 media/image.rs）
+        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "avif"
+        | "heic" | "heif" | "hif" => Some(MediaKind::Image),
         "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "mpg" | "mpeg" | "ts" | "ogv" => {
             Some(MediaKind::Video)
         }

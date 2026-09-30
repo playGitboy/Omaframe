@@ -167,16 +167,33 @@ impl FrameRenderer {
         if let Some(s) = self.slices.borrow().as_ref() {
             return Some(s.clone());
         }
-        let model = self.model()?;
-        let src_pb = self.source.borrow().clone()?;
+        let Some(model) = self.model() else {
+            crate::debug!("切片：没有模型");
+            return None;
+        };
+        let Some(src_pb) = self.source.borrow().clone() else {
+            crate::debug!("切片：没有源图");
+            return None;
+        };
         // 遮罩只在"相框真实尺寸"下有意义；这里按原始分辨率生成，绘制时缩放。
-        let mask_pb = crate::frame_model::build_mask_pixbuf(&src_pb, &model)?;
+        let Some(mask_pb) = crate::frame_model::build_mask_pixbuf(&src_pb, &model) else {
+            crate::warn!("切片：遮罩生成失败");
+            return None;
+        };
         let src = model.slices();
         let mut frame = Vec::with_capacity(9);
         let mut mask = Vec::with_capacity(9);
-        for r in src.iter() {
-            frame.push(pixbuf_rect_to_surface(&src_pb, *r)?);
-            mask.push(pixbuf_gray_rect_to_surface(&mask_pb, *r)?);
+        for (i, r) in src.iter().enumerate() {
+            let Some(f) = pixbuf_rect_to_surface(&src_pb, *r) else {
+                crate::warn!("切片 {i} 相框 surface 失败：{:?}", r);
+                return None;
+            };
+            let Some(m) = pixbuf_gray_rect_to_surface(&mask_pb, *r) else {
+                crate::warn!("切片 {i} 遮罩 surface 失败：{:?}", r);
+                return None;
+            };
+            frame.push(f);
+            mask.push(m);
         }
         let arr = |v: Vec<std::rc::Rc<cairo::ImageSurface>>| -> [std::rc::Rc<cairo::ImageSurface>; 9] {
             let mut it = v.into_iter();

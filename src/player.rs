@@ -631,6 +631,10 @@ impl MediaPlayer {
                 let fit_mode = self.state.config.borrow().frame.fit.clone();
                 // cover：按用户要求保留相框原始比例并裁切素材（老行为）
                 let slices = if fit_mode == "cover" { None } else { r.slices() };
+                crate::debug!(
+                    "相框刷新：fit={fit_mode}，九宫格={}，相框尺寸 {fw}x{fh}",
+                    if slices.is_some() { "启用" } else { "未启用" }
+                );
                 match slices {
                     // 智能自适应：九宫格（四角不变形、四边拉伸、相框可横可竖）
                     Some(sl) => {

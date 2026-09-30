@@ -211,6 +211,9 @@ impl VideoPlayer {
             .arg("-loglevel")
             .arg("error")
             .arg("-nostdin")
+            // 输入前开启自动旋转：让 ffmpeg 先按容器旋转矩阵把画面转正，
+            // 再进我们的 scale（目标尺寸已按旋转后的宽高算好）
+            .args(["-autorotate", "1"])
             .arg("-re")
             .arg("-i")
             .arg(&path)
@@ -329,7 +332,12 @@ fn read_exact_or_eof(reader: &mut impl Read, buf: &mut [u8]) -> bool {
     false
 }
 
-/// 用 ffprobe 探测视频尺寸（快速，一次）
+/// 用 ffprobe 探测视频的**显示尺寸**（快速，一次）。
+///
+/// 关键：手机（尤其 iPhone）拍的 MOV 会用容器的旋转矩阵表示朝向，
+/// 例如流里是 1920x1080 但 `rotation=-90` → 实际应显示为 **1080x1920** 竖屏。
+/// 只看 width/height 会得到横屏，缩放到横屏目标里 → 画面被压扁（用户报的比例错误）。
+/// 所以这里必须把 rotation 取出来并在 90/270 时交换宽高。
 fn probe_size(path: &Path) -> Option<(i32, i32)> {
     if !has_binary("ffprobe") {
         return None;
@@ -341,18 +349,37 @@ fn probe_size(path: &Path) -> Option<(i32, i32)> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height",
+            "stream=width,height:stream_side_data=rotation:stream_tags=rotate",
             "-of",
-            "csv=p=0",
+            "json",
         ])
         .arg(path)
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut it = text.trim().split(|c: char| c == ',' || c == 'x' || c == '\n');
-    let w: i32 = it.find(|s| !s.is_empty())?.trim().parse().ok()?;
-    let h: i32 = it.find(|s| !s.is_empty())?.trim().parse().ok()?;
-    Some((w, h))
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let st = json.get("streams")?.get(0)?;
+    let w = st.get("width")?.as_i64()? as i32;
+    let h = st.get("height")?.as_i64()? as i32;
+    // 旋转信息可能来自 side_data（新）或 tags.rotate（旧）
+    let rot = st
+        .get("side_data_list")
+        .and_then(|a| a.as_array())
+        .and_then(|a| {
+            a.iter()
+                .find_map(|d| d.get("rotation").and_then(|r| r.as_i64()))
+        })
+        .or_else(|| {
+            st.get("tags")
+                .and_then(|t| t.get("rotate"))
+                .and_then(|r| r.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+        })
+        .unwrap_or(0);
+    let rot = ((rot % 360) + 360) % 360;
+    let swapped = rot == 90 || rot == 270;
+    crate::debug!("视频探测：{w}x{h} rotation={rot} → 显示 {}x{}", if swapped { h } else { w }, if swapped { w } else { h });
+    Some(if swapped { (h, w) } else { (w, h) })
 }
 
 fn has_binary(name: &str) -> bool {
