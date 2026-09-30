@@ -446,6 +446,8 @@ impl MediaPlayer {
         if !self.current_is_video.get() {
             return;
         }
+        // 首次拿到视频帧尺寸 → 按方向自动选默认相框（style 为空时）
+        self.auto_pick_frame_style(_w, _h);
         window.view.set_video_frame(Some(tex));
     }
 
@@ -639,6 +641,32 @@ impl MediaPlayer {
     }
 
     /// 组件尺寸变化后重新生成相框纹理
+    /// 首次加载素材时按其方向自动选一套默认相框：
+    /// 横版（宽≥高）→ `横-花环.png`，竖版 → `竖-信笺.png`。
+    /// 仅当 `frame.enabled` 且 `frame.style` 为空（用户没手动选过）时生效，
+    /// 选完写回配置，之后不再覆盖。候选不在相框库里则不改。
+    fn auto_pick_frame_style(&self, w: i32, h: i32) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let needs = {
+            let cfg = self.state.config.borrow();
+            cfg.frame.enabled && cfg.frame.style.trim().is_empty()
+        };
+        if !needs {
+            return;
+        }
+        let pick = if w >= h { "横-花环.png" } else { "竖-信笺.png" };
+        if !crate::config::list_frame_styles().iter().any(|s| s == pick) {
+            crate::debug!("自动选相框：候选 {pick} 不在相框库，保持未选");
+            return;
+        }
+        self.state.update(|c| c.frame.style = pick.to_string());
+        crate::info!("按首个素材方向自动选相框：{pick}");
+        // 立刻应用（style 变了，相框需重载）
+        self.refresh_frame();
+    }
+
     pub fn refresh_frame(&self) {
         let renderer = self.frame.borrow().clone();
         if let Some(r) = renderer {
@@ -680,6 +708,8 @@ impl MediaPlayer {
             (cfg.display.max_width, cfg.display.max_height)
         };
         let _ = size;
+        // 首次拿到素材尺寸 → 按方向自动选默认相框（style 为空时）
+        self.auto_pick_frame_style(size.0, size.1);
         window.view.set_box(mw, mh);
         window.view.set_image(Some(tex), caption);
         self.refresh_frame();

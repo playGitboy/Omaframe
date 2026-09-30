@@ -746,3 +746,28 @@ crate::controls::paint(&cr, &layout_ctl, &self.controls);
 - 缩放只改源图，**内孔/边框是重新分析出来的**（不是写死的坐标），所以逻辑安全；
   但改源图后应 `rm -rf ~/.cache/omarchy-omaframe/frames/` 强制重分析。
 - 校验项：尺寸 ≤maxdim、RGBA 合法、alpha 覆盖 0~255、透明区 RGB 唯一。
+
+## 四十五、程序默认设置（2026-09-30 首装默认值）
+
+这些是**首装/默认值**（改配置后以用户文件为准）。改这里会影响新装机器与
+`Config::default()`，已有 config.toml 的用户不受影响。
+
+| 项 | 默认值 | 说明 |
+|---|---|---|
+| 媒体目录 | **当前系统壁纸目录** `~/.local/state/omarchy/current/theme/backgrounds` | `default_media_dir()` 优先当前主题壁纸 → `~/.config/omarchy/backgrounds` → `~/Pictures/PhotoFrame` |
+| 最大宽 × 高 | **350 × 350** | `DisplayConfig` |
+| 自动轮换 | **启用，间隔 5 秒**，随机 | `SlideshowConfig` |
+| 视频 | **静音**播放，**30 fps** | `VideoConfig` |
+| 相框 | **默认启用** `enabled = true` | `FrameConfig`（原先默认 false） |
+| 相框样式 | **按首个素材方向自动选** | 横版→`横-花环.png`，竖版→`竖-信笺.png`；见下 |
+| 位置 | **左上角**，边距 **12** | `WindowConfig`：x/y=12、margin=12、anchor=top-left |
+
+**相框自动选样式**（`player::auto_pick_frame_style`）：
+- 在**首次拿到素材尺寸**时触发（图片走 `apply_image(size)`，视频走
+  `on_video_frame(w,h)`）—— `MediaItem.natural` 实际从不填充，所以以解码尺寸为准。
+- 仅当 `frame.enabled && frame.style 为空`（用户没手动选过）时生效；
+  选完写回配置并 `refresh_frame()`，**之后不再覆盖**用户选择。
+- 候选不在相框库里则不改（保持未选）。横版=宽≥高 → 花环；竖版 → 信笺。
+
+**实测**：首装（清空 config + 模型缓存）→ 媒体目录=当前壁纸、位置(12,12)、350×350、
+间隔5、默认启用相框；横版素材自动选 `横-花环.png`，1080×1920 竖版自动选 `竖-信笺.png`。

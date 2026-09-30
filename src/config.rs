@@ -176,8 +176,8 @@ impl Default for SourceConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            max_width: 400,
-            max_height: 600,
+            max_width: 350,
+            max_height: 350,
             cache_items: 12,
             cache_budget_mb: 32,
             max_decode_px: 4096,
@@ -189,7 +189,7 @@ impl Default for SlideshowConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            interval: 300,
+            interval: 5,
             random: true,
         }
     }
@@ -209,7 +209,9 @@ impl Default for VideoConfig {
 impl Default for FrameConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // 默认**启用**相框；style 留空 → 首次加载素材时按方向自动选一套
+            // （横版 → 横-花环.png，竖版 → 竖-信笺.png，见 player::auto_pick_frame_style）。
+            enabled: true,
             desktop_enabled: true,
             style: String::new(),
             grow_percent: 3,
@@ -258,13 +260,13 @@ pub fn list_frame_styles() -> Vec<String> {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            x: 0,
-            y: 0,
-            width: 400,
-            height: 600,
+            x: 12,
+            y: 12,
+            width: 350,
+            height: 350,
             monitor: String::new(),
             default_anchor: "top-left".into(),
-            margin: 32,
+            margin: 12,
             placed: false,
         }
     }
@@ -341,18 +343,22 @@ impl Config {
     }
 }
 
-/// 首次运行的默认媒体目录：优先 ~/Pictures/PhotoFrame，其次当前主题壁纸目录。
+/// 首次运行的默认媒体目录：**优先当前系统壁纸目录**（Omarchy 的 current 主题），
+/// 其次 `~/.config/omarchy/backgrounds`，最后 `~/Pictures/PhotoFrame`。
 pub fn default_media_dir() -> PathBuf {
-    let conventional = home_dir().join("Pictures").join("PhotoFrame");
-    if conventional.is_dir() {
-        return conventional;
+    let home = home_dir();
+    // ① 当前系统壁纸（Omarchy 的 current 符号链接指向正在使用的主题）
+    let current_theme_bg = home.join(".local/state/omarchy/current/theme/backgrounds");
+    if current_theme_bg.is_dir() {
+        return current_theme_bg;
     }
-    let theme_bg = home_dir()
-        .join(".local/state/omarchy/current/theme/backgrounds");
-    if theme_bg.is_dir() {
-        return theme_bg;
+    // ② Omarchy 壁纸目录
+    let omarchy_bg = home.join(".config/omarchy/backgrounds");
+    if omarchy_bg.is_dir() {
+        return omarchy_bg;
     }
-    conventional
+    // ③ 约定目录（兜底）
+    home.join("Pictures").join("PhotoFrame")
 }
 
 // ---------------------------------------------------------------- 读写
