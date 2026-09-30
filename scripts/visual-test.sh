@@ -2,8 +2,9 @@
 # 视觉回归测试：真实相框 × 多种素材比例 → 截图（保存到 target/visual/）
 #
 # 用法：
-#   scripts/visual-test.sh                     # 默认测 木纹/花环/炫彩
-#   scripts/visual-test.sh 木纹.png 猫线.png    # 指定相框
+#   scripts/visual-test.sh                     # 默认测 横-木纹/横-花环/横-炫彩
+#   scripts/visual-test.sh 横-木纹.png 横-猫线.png   # 指定相框（须为 frame/ 下的真实文件名）
+#   PF_FRAME_DIR=/path/to/frame scripts/visual-test.sh   # 用别处的相框库
 #   PHOTO_FRAME_DEBUG_OVERLAY=1 scripts/visual-test.sh   # 同时打开九宫格调试网格
 #
 # 测试素材默认放在 /tmp/pfm/{w16x9,p9x16,s1x1,u21x9}/，每个目录一张图。
@@ -18,13 +19,24 @@ MEDIA_ROOT="${PF_TEST_MEDIA:-/tmp/pfm}"
 FRAMES=("$@")
 [ ${#FRAMES[@]} -eq 0 ] && FRAMES=(横-木纹.png 横-花环.png 横-炫彩.png)
 
-# 相框名必须真实存在（相框库已被整理成 横-*/竖-* 两组）
-FRAME_DIR="${PF_FRAME_DIR:-$HOME/omaframe/frame}"
+# 相框名必须真实存在（相框库已被整理成 横-*/竖-* 两组）。
+# 默认用**本仓库自带的** frame/，不写死 ~/omaframe —— 仓库克隆到哪都能跑
+# （写成 $HOME/omaframe 时，若仓库实际在 ~/Omaframe 会大小写不匹配，
+#   导致所有相框被静默跳过、跑出一堆"缺相框"的假回归结果）。
+FRAME_DIR="${PF_FRAME_DIR:-$ROOT/frame}"
+EXISTING=()
 for f in "${FRAMES[@]}"; do
-  if [ ! -f "$FRAME_DIR/$f" ]; then
+  if [ -f "$FRAME_DIR/$f" ]; then
+    EXISTING+=("$f")
+  else
     echo "跳过不存在的相框：$FRAME_DIR/$f" >&2
   fi
 done
+if [ ${#EXISTING[@]} -eq 0 ]; then
+  echo "相框库里一个都没找到（查 $FRAME_DIR）；可用相框：$(ls "$FRAME_DIR" 2>/dev/null | tr '\n' ' ')" >&2
+  exit 1
+fi
+FRAMES=("${EXISTING[@]}")
 
 mkdir -p "$OUT" "$MEDIA_ROOT"
 cp "$CFG" /tmp/cfg.visual.bak
