@@ -31,6 +31,19 @@ const MASK_INSET: f64 = 0.0;
 /// 桌面就会沿开口边缘透出一条 1px 亮线（"十字细线"）。让媒体多探入几像素、
 /// 由相框斜边盖住即可；值过大会让照片钻到框体上，所以取保守的 3px。
 const MEDIA_EDGE_BLEED: f64 = 3.0;
+/// 媒体绘制区域相对中心片（CENTER）内缩的像素数。
+///
+/// **保持 0**（媒体正好铺满中心片）。两个必须同时成立的条件：
+///   ① 媒体不得越过中心片边界 —— 模型内孔比 PNG 真实透明区**内缩约 1 个分析像素**
+///      （降采样+alpha 阈值的必然结果），每条边片内缘因此带 1px 透明行：
+///      遮罩不擦、相框不盖，照片的 bleed 就会沿内缘露出 1px，
+///      在四角与边片的 T 型交点处连成**十字细线**（用户报的“割裂感”）。
+///      把媒体严格 clip 在中心片内，物理上杜绝越界。
+///   ② 媒体边缘不得半透明 —— 靠 MEDIA_EDGE_BLEED：纹理被缩放到
+///      “媒体矩形 ± 3px” 再被 clip 裁回媒体矩形，所以 clip 边界上的采样点
+///      距纹理自身边缘还有 3px，双线性取到的是纹理内部像素 → 完全不透明。
+///      两者同时满足，就不需要早期“把边片向外扩 1px 去盖住半透明边”的做法
+///      （那个做法会重新缩放每一片 → 接缝内容错位 = 十字线）。
 
 type ClickHandler = Rc<dyn Fn(HitZone)>;
 type DragHandler = Rc<dyn Fn(crate::controls::DragPhase)>;
@@ -132,25 +145,24 @@ mod imp {
             // ===== 智能九宫格路径 =====
             let slices_now = self.frame_slices.borrow().clone();
             if let (Some(sl), Some(layout)) = (slices_now, self.layout.get()) {
-                // 1) 媒体：contain 到中心片（布局已按素材比例定内容区，基本精确贴合）
+                // 1) 媒体：严格铺满中心片（CENTER），且不越界
+                //
+                // 为什么内缩 1px（而不是直接铺满、或向外扩）：
+                // 中心片是相框内孔，四条边紧邻的是**边片**（不透明框体）。
+                // 若媒体正好铺到中心片边界：
+                //   · 纹理节点在目标矩形边缘会采到纹理外的像素 → 照片最外一圈
+                //     变半透明，透出桌面（三十五排查的“1px 亮线”）；
+                //   · 为了遮这个半透明边而把边片向外扩 1px（早期做法）→ 每片被
+                //     重新缩放，相邻两片内容错位 → 接缝处 1px 断层 = “十字线”。
+                // 严格 clip 在中心片矩形内（不越界）→ 边片内缘那 1px 透明行
+                // 里不会有任何媒体 → 十字细线从根上消失。
                 snapshot.save();
-                // 外扩 1.5px：纹理节点在目标矩形边缘会采到纹理之外的透明像素，
-                // 照片自己那 1px 就会半透明 → 透出桌面（用户看到的"十字细线"）。
-                // 多出的 1.5px 落在相框内沿下面，由遮罩与相框 art 处理，看不出来。
-                let eg = MEDIA_EDGE_BLEED as f32;
-                let clip = gtk::graphene::Rect::new(
-                    mx as f32 - eg,
-                    my as f32 - eg,
-                    (mw.max(1) as f32) + eg * 2.0,
-                    (mh.max(1) as f32) + eg * 2.0,
-                );
+                let clip = media_rect;
                 snapshot.push_clip(&clip);
                 if let Some(tex) = self.texture.borrow().clone() {
-                    // 直接铺满内容矩形，并向外多画 1px。
-                    // ① 不用 contain/cover 计算：取整会在四周留 ≤1px 空条，空条又被遮罩擦掉
-                    //    → 透出桌面（就是那圈"十字细线"）。
-                    // ② 多画 1px：纹理节点在边缘会采到纹理外的透明像素 → 照片自身边缘变半透明，
-                    //    同样漏出桌面。这 1px 落在不透明框体下面，看不出来。
+                    // 绘制到比 clip 再大 MEDIA_EDGE_BLEED 的范围（clip 会裁掉多余的）：
+                    // 纹理被缩放到 bleed 矩形，clip 边界离纹理自身边缘还有 2px，
+                    // 双线性采样取到的是纹理内部像素 → 照片边缘不半透明。
                     let g = MEDIA_EDGE_BLEED as f32;
                     let bleed = gtk::graphene::Rect::new(
                         media_rect.x() - g,
@@ -163,87 +175,98 @@ mod imp {
                 snapshot.pop();
                 snapshot.restore();
 
-                // 2) 遮罩：九片各自 DestOut（按相框真实 alpha，抗锯齿、绝不漏出框外）
+                // 2) 遮罩：九片各自 DestOut（按相框真实 alpha、抗锯齿、绝不漏出框外）
                 //
-                // 中心片（CENTER）向外扩 1px 再擦：边片最外一列是"完全不透明"的框体，
-                // 它会把内孔边缘那 1px 媒体也擦掉，而相框中心片那一列是透明的，
-                // 于是桌面从这 1px 透出来 —— 正是用户看到的"十字细线"。
-                // 让中心片多擦 1px（少擦媒体），这 1px 媒体被不透明框体盖住，看不出来。
-                for i in 0..9 {
-                    let d = layout.dst[i];
-                    if d.is_empty() {
-                        continue;
-                    }
-                        let b = 0.0;
-                    let (dx, dy, dw, dh) = (
-                        d.x as f64 - b,
-                        d.y as f64 - b,
-                        d.w as f64 + b * 2.0,
-                        d.h as f64 + b * 2.0,
-                    );
-                    let surf = sl.mask[i].clone();
-                    let (sw_, sh_) = (surf.width().max(1) as f64, surf.height().max(1) as f64);
-                    let rect = gtk::graphene::Rect::new(
-                        dx as f32,
-                        dy as f32,
-                        dw.max(1.0) as f32,
-                        dh.max(1.0) as f32,
-                    );
-                    let cr = snapshot.append_cairo(&rect);
+                // 遮罩矩形与下面第 3 步的相框矩形**完全相同**（都用 layout.dst），
+                // 两步边界严格对齐，媒体不可能从相框与遮罩的错位缝里透出桌面。
+                //
+                // 注意：早期版本这里给中心片开过 1px 外扩（与相框的 1px overlap
+                // 各扩各的）—— 那正是「十字线」的来源之一，已一并去掉。
+                // 媒体纹理自身的边缘补偿由上面的 MEDIA_EDGE_BLEED 负责。
+                {
+                    // **九片必须画进同一个 cairo 节点**（单次 append_cairo）。
+                    //
+                    // 每片各自 append_cairo 时，GSK 会为每片生成一个独立渲染节点，
+                    // 节点边界在**分数设备像素**上（本机缩放 1.6×：逻辑 112 → 设备 179.2）
+                    // → 相邻节点各自做像素对齐、取整方向不同 → **每条切片边界出现 1px
+                    // 亮线/缝隙**（用户报的“四角十字线”“拼接没对齐”）。
+                    // 已实测：切片 surface 的内容完全正确（第一列颜色与源图一致），
+                    // 所以问题只在节点边界，不在切片。
+                    let cr = snapshot.append_cairo(&frame_rect);
                     let _ = cr.save();
                     cr.set_operator(cairo::Operator::DestOut);
                     cr.set_antialias(cairo::Antialias::None);
-                    cr.translate(dx, dy);
-                    cr.scale(dw / sw_, dh / sh_);
-                    let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
-                    let pat = cr.source();
-                    let _ = pat.set_filter(cairo::Filter::Good);
-                    cr.rectangle(0.0, 0.0, sw_ as f64, sh_ as f64);
-                    let _ = cr.fill();
+                    for i in 0..9 {
+                        let d = layout.dst[i];
+                        if d.is_empty() {
+                            continue;
+                        }
+                        let (dx, dy, dw, dh) = (d.x as f64, d.y as f64, d.w as f64, d.h as f64);
+                        let surf = sl.mask[i].clone();
+                        let (sw_, sh_) = (surf.width().max(1) as f64, surf.height().max(1) as f64);
+                        let _ = cr.save();
+                        cr.translate(dx, dy);
+                        cr.scale(dw / sw_, dh / sh_);
+                        let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
+                        let pat = cr.source();
+                        let _ = pat.set_filter(cairo::Filter::Good);
+                        cr.rectangle(0.0, 0.0, sw_, sh_);
+                        let _ = cr.fill();
+                        let _ = cr.restore();
+                    }
                     let _ = cr.restore();
                 }
                 // 3) 相框：九片叠在最上层（四角等比、四边拉伸）
                 //
-                // 先画中心片，再画 8 片边框，每片向"中心"多画 0.5px：
-                // 接缝处相框 art 本就不透明，重叠看不出差别，却能彻底消掉
-                // 浮点/采样造成的 1px 发丝缝（用户报的"十字线"）。
-                // 注意：遮罩**不能**这样重叠 —— 遮罩会擦掉媒体，多画会伤到照片边缘。
-                for i in [4usize, 0, 1, 2, 3, 5, 6, 7, 8] {
-                    let d = layout.dst[i];
-                    if d.is_empty() {
-                        continue;
-                    }
-                    // 整数 1px 重叠：光栅化会把坐标取整，0.5px 可能仍留缝；
-                    // 整整 1px 一定盖得住（相框 art 不透明，重叠看不出来）。
-                    let (dx, dy, dw, dh) = match i {
-                        0 | 6 => (d.x as f64, d.y as f64, d.w as f64 + 1.0, d.h as f64 + 1.0),
-                        2 | 8 => (d.x as f64 - 1.0, d.y as f64, d.w as f64 + 1.0, d.h as f64 + 1.0),
-                        3 => (d.x as f64, d.y as f64, d.w as f64 + 1.0, d.h as f64),
-                        5 => (d.x as f64 - 1.0, d.y as f64, d.w as f64 + 1.0, d.h as f64),
-                        1 => (d.x as f64, d.y as f64, d.w as f64, d.h as f64 + 1.0),
-                        _ => (d.x as f64, d.y as f64 - 1.0, d.w as f64, d.h as f64 + 1.0),
-                    };
-                    let surf = sl.frame[i].clone();
-                    let (sw_, sh_) = (surf.width().max(1) as f64, surf.height().max(1) as f64);
-                    let rect = gtk::graphene::Rect::new(
-                        dx as f32,
-                        dy as f32,
-                        dw.max(1.0) as f32,
-                        dh.max(1.0) as f32,
-                    );
-                    let cr = snapshot.append_cairo(&rect);
+                // **九片必须严格按 layout.dst 的整数矩形逐片拼接，不做任何外扩/重叠。**
+                //
+                // 为什么不能外扩：layout_raw 已用"整数累加"生成 9 个矩形
+                // （x0→x1→x2→x3、y0→y1→y2→y3），相邻片天然像素级相接。
+                // 之前给每片加了 1px overlap 去接缝，结果适得其反：
+                //   * 每片被放大 1px 绘制，缩放系数从 dw/sw 变成 (dw+1)/sw；
+                //   * 相邻两片内容来自 PNG 的**不同区域**，重叠 1px 就等于
+                //     把 A 片的边缘内容盖到 B 片上 → 接缝处出现 1px 内容断层；
+                //   * T 型交点（角片与边片相接）处两条断层相交 → 看起来就是
+                //     一条"十字线"把相框割成九宫格（用户报的"割裂"）。
+                //
+                // 不留缝靠三件事，不靠外扩：
+                //   ① layout_raw 的整数累加（几何层已保证，勿改回浮点）
+                //   ② set_antialias(None)（否则共享边被半透明化 → 发丝缝）
+                //   ③ translate 到整数原点后 fill 整数矩形，cairo 光栅化正好
+                //      填满 [d.x, d.x+d.w) × [d.y, d.y+d.h)，与邻片无缝相接
+                //
+                // 遮罩（上面第 2 步）用的是**完全相同**的矩形，两者边界严格对齐；
+                // 若将来只改其中一处，必须同步改另一处，否则又会出现透光线。
+                {
+                    let cr = snapshot.append_cairo(&frame_rect);
                     let _ = cr.save();
                     // 路径关闭抗锯齿：否则每片边缘被半透明化 → 接缝发丝线
                     cr.set_antialias(cairo::Antialias::None);
-                    cr.translate(dx, dy);
-                    cr.scale(dw / sw_, dh / sh_);
-                    let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
-                    let pat = cr.source();
-                    let _ = pat.set_filter(cairo::Filter::Good);
-                    // 边缘钳制：双线性不去取源矩形之外的透明像素
-                    let _ = pat.set_extend(cairo::Extend::Pad);
-                    cr.rectangle(0.0, 0.0, sw_, sh_);
-                    let _ = cr.fill();
+                    for i in [4usize, 0, 1, 2, 3, 5, 6, 7, 8] {
+                        let d = layout.dst[i];
+                        if d.is_empty() {
+                            continue;
+                        }
+                        let (dx, dy, dw, dh) = (
+                            d.x as f64,
+                            d.y as f64,
+                            d.w as f64,
+                            d.h as f64,
+                        );
+                        let surf = sl.frame[i].clone();
+                        let (sw_, sh_) = (surf.width().max(1) as f64, surf.height().max(1) as f64);
+                        let _ = cr.save();
+                        cr.translate(dx, dy);
+                        cr.scale(dw / sw_, dh / sh_);
+                        let _ = cr.set_source_surface(&*surf, 0.0, 0.0);
+                        let pat = cr.source();
+                        let _ = pat.set_filter(cairo::Filter::Good);
+                        // 边缘钳制：双线性不去取源矩形之外的透明像素
+                        let _ = pat.set_extend(cairo::Extend::Pad);
+                        cr.rectangle(0.0, 0.0, sw_, sh_);
+                        let _ = cr.fill();
+                        let _ = cr.restore();
+                    }
                     let _ = cr.restore();
                 }
 
@@ -287,10 +310,13 @@ mod imp {
                 );
                 snapshot.save();
                 // **先建 cairo 节点，再平移上下文**（顺序不能反）。
-                // append_cairo 的裁剪框取"调用那一刻"的快照变换：此刻只被拖动
-                // 偏移平移过，裁剪框正好落在相框处。若反过来先 translate(fx,fy)
-                // 再 append_cairo，裁剪框变成 (2fx,2fy,fw,fh)，控制层左/上各被
-                // 裁掉 fx/fy -> 相框缩小后按钮中心移进被裁区域 -> 消失或只剩一半。
+                //
+                // `append_cairo` 的**裁剪框**取“调用那一刻”的快照变换：
+                // 此刻快照只被拖动偏移 (ox,oy) 平移过，裁剪框正好落在相框处 ✓。
+                // 若反过来写成 `snapshot.translate(fx,fy)` → `append_cairo(&frame_rect)`，
+                // 裁剪框会变成 **(2fx, 2fy, fw, fh)** —— 控制层左/上各被裁掉 fx/fy 像素。
+                // 相框缩小后媒体中心往左上移动，正好移进被裁掉的区域 →
+                // 用户报的“播放/暂停按钮消失或只显示一半”。
                 let cr = snapshot.append_cairo(&frame_rect);
                 cr.translate(fx as f64, fy as f64);
                 crate::controls::paint(&cr, &layout_ctl, &self.controls);

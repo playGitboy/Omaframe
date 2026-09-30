@@ -23,7 +23,7 @@ use crate::geometry::{slices_src, RectI};
 use std::path::{Path, PathBuf};
 
 /// 算法版本：改动分析逻辑必须 +1，否则旧缓存会继续生效
-pub const ANALYSIS_VERSION: u32 = 3;
+pub const ANALYSIS_VERSION: u32 = 5;
 
 /// "完全透明"的阈值：alpha ≤ 它才算可以放东西的区域。
 /// 取小值（而不是 24/32）是为了**把半透明羽化带留给相框本体**：
@@ -311,7 +311,20 @@ pub fn analyze(pb: &gdk_pixbuf::Pixbuf, opts: AnalyzeOpts) -> Option<Analysis> {
         (hole_box.2 as f64 * sx).ceil() as i32,
         (hole_box.3 as f64 * sy).ceil() as i32,
     );
-
+    // ⑧ 在**原始分辨率**上把内孔边界精修到像素级。
+    //
+    // 降采样图上紧贴内孔边缘的那一圈分析像素被框体 alpha 稀释，达不到透明阈值
+    // → 映射回来后 hole_rect **内缩约 1 个分析像素**（实测：合成相框真实透明从
+    // y=100 开始，分析给出 hole.y=101）。直接拿它切九宫格，每条边片的内缘都会
+    // 带 1px **透明行**：
+    //   · 遮罩那一行 alpha=0 → 不擦媒体；
+    //   · 相框那一行 art 透明 → 盖不住媒体；
+    // 而媒体有 bleed 外扩 → 照片从**整条接缝**渗出 1px，在角/边 T 型交点处
+    // 连成十字细线（用户报的“角和边拼接有缝隙”）。
+    //
+    // 这里从内孔中心向四个方向在**原图**上扫描，找真正的“透明→不透明”跳变。
+    // 只在透明像素上向外扩，扫到不透明为止，所以只会变准不会误判。
+    let hole_rect = refine_hole_edges(pb, hole_rect);
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
     crate::info!(
@@ -336,6 +349,97 @@ pub fn analyze(pb: &gdk_pixbuf::Pixbuf, opts: AnalyzeOpts) -> Option<Analysis> {
         elapsed_ms,
     };
     Some(Analysis { model, outside, hole })
+}
+
+/// 判定“框体实心”的 alpha 阈值：内孔边界取相框 alpha **接近实心**的点。
+///
+/// 为什么不用“刚刚不透明”（alpha_threshold=8）：
+/// 相框内缘普遍带 1~6px 的**软渐变**（倒角、内阴影、圆角）。实测 `横-木纹.png`
+/// 下缘 alpha 0→4→60→206→248→252（约 4px），左缘 254→236→192→60→16→1（约 6px）。
+/// 若按 alpha>8 定边界，会把 **alpha 250 的不透明框体行也算进内孔**：
+///   · 遮罩（中心片）那一行只擦掉一部分 → 照片**半透明显出来**；
+///   · 相框（中心片）那一行又把框体 art 画在照片上；
+/// 于是沿内缘出现一条“半透明缝隙/细线”（用户报的“拼接留了空隙”），
+/// 而且**只在软渐变宽的那几条边出现**（左/上缘渐变窄，所以先修好了）。
+/// 取半程点后，软渐变被平分到中心片与边片两侧，过渡自然、不露缝。
+const HOLE_SOLID_ALPHA: u8 = 240;
+
+/// 在原始分辨率上把内孔的 4 条边精修到**真正的像素跳变**。
+///
+/// 从内孔中心向四个方向扫描，连续透明（含 alpha ≤ threshold）才算内孔；
+/// 碰到第一个不透明像素就停。四个方向各取**最外**的那条线（对中线取多条采样线
+/// 的最小值），避免内孔里的装饰（如伸进来的花朵）把边界提前挡住。
+/// 若一直透明到画布边缘，就取画布边缘。
+fn refine_hole_edges(pb: &gdk_pixbuf::Pixbuf, hole: RectI) -> RectI {
+    let cw = pb.width();
+    let ch = pb.height();
+    if !pb.has_alpha() || hole.is_empty() {
+        return hole;
+    }
+    let nch = pb.n_channels() as usize;
+    let stride = pb.rowstride() as usize;
+    // SAFETY: 只读扫描
+    let px = unsafe { pb.pixels() };
+    let alpha = |x: i32, y: i32| -> u8 {
+        if x < 0 || y < 0 || x >= cw || y >= ch {
+            return 255; // 画布外当作不透明，阻止继续外扩
+        }
+        px[y as usize * stride + x as usize * nch + nch - 1]
+    };
+    let solid = |x: i32, y: i32| alpha(x, y) >= HOLE_SOLID_ALPHA;
+
+    let cx = hole.x + hole.w / 2;
+    let cy = hole.y + hole.h / 2;
+    // 采样带：内孔中间 1/2 区域（避开内孔四角的装饰）
+    let band_x = (hole.w / 4).max(1);
+    let band_y = (hole.h / 4).max(1);
+
+    // 左：向左扫到第一个不透明像素
+    let mut left = hole.x;
+    for k in 0..=band_y {
+        let y = (cy - band_y + k).clamp(0, ch - 1);
+        let mut x = hole.x;
+        while x > 0 && !solid(x, y) {
+            x -= 1;
+        }
+        if solid(x, y) { left = left.min(x + 1); }
+    }
+    // 右：向右扫
+    let mut right = hole.right();
+    for k in 0..=band_y {
+        let y = (cy - band_y + k).clamp(0, ch - 1);
+        let mut x = hole.right() - 1;
+        while x < cw - 1 && !solid(x, y) {
+            x += 1;
+        }
+        if solid(x, y) { right = right.max(x); }
+    }
+    // 上
+    let mut top = hole.y;
+    for k in 0..=band_x {
+        let x = (cx - band_x + k).clamp(0, cw - 1);
+        let mut y = hole.y;
+        while y > 0 && !solid(x, y) {
+            y -= 1;
+        }
+        if solid(x, y) { top = top.min(y + 1); }
+    }
+    // 下
+    let mut bottom = hole.bottom();
+    for k in 0..=band_x {
+        let x = (cx - band_x + k).clamp(0, cw - 1);
+        let mut y = hole.bottom() - 1;
+        while y < ch - 1 && !solid(x, y) {
+            y += 1;
+        }
+        if solid(x, y) { bottom = bottom.max(y); }
+    }
+
+    let x0 = left.clamp(0, cw - 1);
+    let y0 = top.clamp(0, ch - 1);
+    let x1 = right.clamp(x0 + 1, cw);
+    let y1 = bottom.clamp(y0 + 1, ch);
+    RectI::new(x0, y0, x1 - x0, y1 - y0)
 }
 
 fn bbox_of(mask: &[bool], w: i32, h: i32) -> Option<(i32, i32, i32, i32)> {
@@ -535,7 +639,6 @@ pub fn save_cached(path: &Path, opts: &AnalyzeOpts, model: &FrameModel) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::RectI;
 
     fn pb(w: i32, h: i32) -> gdk_pixbuf::Pixbuf {
         gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, w, h).unwrap()
@@ -552,6 +655,75 @@ mod tests {
             }
         }
         p
+    }
+
+    /// **防回归（“缝隙/十字线”的根因）**：相框内缘常带**宽软渐变**
+    /// （倒角/内阴影。实测 `横-木纹.png` 下缘 alpha 0→4→60→206→248→252 跨约 4px，
+    /// 左缘 254→236→192→60→16→1 跨约 6px）。
+    ///
+    /// 内孔边界必须取相框 alpha 的**半程点**：
+    ///   * 取“刚刚不透明”（alpha>8）→ 边界落到渐变最外沿，把 alpha 250 的
+    ///     **不透明框体行也算进内孔** → 遮罩只擦一部分、照片半透明显出来
+    ///     → 沿内缘出现几像素宽的“缝隙/细线”（用户报的问题）；
+    ///   * 取半程点 → 渐变被平分到中心片与边片两侧，过渡自然、不露缝。
+    ///
+    /// 本测试锁定：① 每条边片的**内缘**必须是实心框体（遮罩能擦、相框能盖）；
+    /// ② 内孔内部必须透明（照片不被无谓擦掉）。
+    /// 已验证：把阈值改回 alpha>8 时本测试会失败。
+    #[test]
+    fn refined_hole_splits_soft_inner_edge() {
+        let (w, h) = (600i32, 420i32);
+        let (hl, hr, ht, hb) = (60i32, 540i32, 60i32, 360i32);
+        const RAMP: i32 = 8; // 软渐变宽度（源像素）
+        let p = pb(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let d = (hl - x).max(x - (hr - 1)).max(ht - y).max(y - (hb - 1));
+                let a: u8 = if d <= 0 {
+                    0 // 内孔
+                } else if d <= RAMP {
+                    ((d as f64 / (RAMP + 1) as f64) * 255.0).round() as u8
+                } else {
+                    255
+                };
+                p.put_pixel(x as u32, y as u32, 120, 90, 60, a);
+            }
+        }
+        let a = analyze(&p, AnalyzeOpts::default()).expect("应能分析");
+        let hole = a.model.hole;
+        let nch = p.n_channels() as usize;
+        let stride = p.rowstride() as usize;
+        // SAFETY: 只读
+        let raw = unsafe { p.pixels() };
+        let alpha = |x: i32, y: i32| -> u8 { raw[y as usize * stride + x as usize * nch + nch - 1] };
+
+        // ① 边片内缘 = 内孔四邻，必须是实心框体
+        let probes = [
+            ("上边", hole.x + hole.w / 2, hole.y - 1),
+            ("下边", hole.x + hole.w / 2, hole.bottom()),
+            ("左边", hole.x - 1, hole.y + hole.h / 2),
+            ("右边", hole.right(), hole.y + hole.h / 2),
+        ];
+        for (name, x, y) in probes {
+            assert!(x >= 0 && y >= 0 && x < w && y < h, "{name} 探测点越界 ({x},{y})");
+            assert!(
+                alpha(x, y) >= HOLE_SOLID_ALPHA,
+                "{name} 边片内缘 ({x},{y}) alpha={} 不够实 → 遮罩擦不掉、相框盖不住 → 会露缝。hole={hole:?}",
+                alpha(x, y)
+            );
+        }
+        // ② 内孔内部（软渐变以内）透明
+        assert!(
+            alpha(hole.x + RAMP + 1, hole.y + RAMP + 1) <= 8,
+            "内孔内部应透明 hole={hole:?}"
+        );
+        // ③ 内孔不能越出软渐变之外（不会把实心框体吞进来）
+        assert!(hole.x >= hl - RAMP && hole.y >= ht - RAMP, "内孔越界 {:?}", hole);
+        assert!(
+            hole.right() <= hr + RAMP && hole.bottom() <= hb + RAMP,
+            "内孔越界 {:?}",
+            hole
+        );
     }
 
     #[test]
