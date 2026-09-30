@@ -208,8 +208,8 @@ mod imp {
                     let _ = cr.restore();
                 }
 
-                // 4) 开发用 Debug Overlay（PF_FRAME_DEBUG=1）
-                if std::env::var_os("PF_FRAME_DEBUG").is_some() {
+                // 4) 开发用 Debug Overlay（**必须显式** PHOTO_FRAME_DEBUG_OVERLAY=1）
+                if debug_overlay_enabled() {
                     let cr = snapshot.append_cairo(&frame_rect);
                     cr.set_source_rgba(0.0, 0.9, 1.0, 0.9);
                     cr.set_line_width(1.0);
@@ -344,6 +344,26 @@ mod imp {
             snapshot.restore();
         }
     }
+}
+
+/// 开发用九宫格调试网格的开关。
+///
+/// 画的是切片边框 + 内容区虚线框，看起来就像相框上被画了"十字线"——
+/// 曾被误当成渲染 bug 上报。因此：
+/// - 必须显式设置 `PHOTO_FRAME_DEBUG_OVERLAY=1` 才显示（默认关闭）
+/// - 一旦开启会在日志里打 WARN，方便区分"调试网格"和"真·渲染问题"
+fn debug_overlay_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("PHOTO_FRAME_DEBUG_OVERLAY").is_some();
+        if on {
+            crate::warn!(
+                "已开启九宫格调试网格（PHOTO_FRAME_DEBUG_OVERLAY）——仅供开发排查，正式使用请取消该环境变量"
+            );
+        }
+        on
+    })
 }
 
 impl imp::MediaView {

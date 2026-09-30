@@ -67,10 +67,13 @@
 | 相框内露出一圈桌面（透明漏洞） | 九宫格中心片用了"安全内接矩形"（比内孔小） | 中心片 = **内孔范围**；安全矩形只用于诊断/兜底 |
 | 换了个"透明"PNG 就崩溃 | 该 PNG 其实没有 alpha 通道，旧洪泛路径按 4 通道读越界 | 入口 `has_alpha()`/`n_channels()>=4` 挡住并退回叠图 |
 | 相框四角被拉长变形 | 把整张 PNG 拉伸到素材比例 | 九宫格：四角同比缩放（`k` 相同），只有四边拉伸 |
-| 相框上有一条"画出来的细线" | 切片 cairo 填充默认开抗锯齿，共享边被半透明化 → 发丝缝 | 填切片前 `set_antialias(None)` + 每片 0.5px overlap |
+| 相框上有一条"画出来的细线"（单条） | 切片 cairo 填充默认开抗锯齿，共享边被半透明化 → 发丝缝 | 填切片前 `set_antialias(None)` + 每片 0.5px overlap |
+| 相框上有"十字/井字"细线（成组） | 开发调试网格被当渲染结果 | 见下一节；默认关闭 + 显式开关 + WARN |
 | iPhone 照片（HEIC）不显示 | gdk-pixbuf 没有 heif loader | 解不了就调 ffmpeg/magick 转 PNG 再走原流程（不擅自抠白底） |
 | iPhone 视频画面被压扁/比例错 | 只读 `width/height`，忽略容器旋转矩阵 | ffprobe 读 `rotation`，90/270 时交换宽高 + ffmpeg `-autorotate 1` |
 | 相框比"最大宽高"设置还大 | 九宫格拉伸让外框突破上限盒 | `layout_adaptive` 带 `max_frame`：超标整体等比缩小（floor 防溢出） |
+| MOV 一闪而过（共 0 帧） | 显式传 `-autorotate` 被该 ffmpeg 当输出选项 → ffmpeg 报错退出 | 别传 `-autorotate`（默认就开）；改 ffmpeg 参数后**手动跑一遍**看真实报错 |
+| 相框上出现十字/井字细线 | 多半是开发调试网格（切片边框+内容区虚线） | 调试网格必须显式 `PHOTO_FRAME_DEBUG_OVERLAY=1`，开启时打 WARN；收尾不带调试变量重启 |
 
 更完整的症状→根因对照见 `KEY-FINDINGS.md`（按章节号对照，如「三点八 设置面板」「三点九 控制层」「三十 layer-shell 里开对话框」）。
 

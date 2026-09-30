@@ -189,8 +189,10 @@ impl VideoPlayer {
         let probed = probe_size(&path);
         let (nw, nh) = match probed {
             Some((vw, vh)) if vw > 0 && vh > 0 => {
-                // 已知真实比例 → 精确缩放到目标尺寸（不变形）
-                crate::geometry::fit(vw, vh, bw, bh)
+                // 已知真实比例（已按旋转矩阵修正）→ 精确缩放到目标尺寸（不变形）
+                let (w, h) = crate::geometry::fit(vw, vh, bw, bh);
+                // 取偶数：yuv420p 等格式对奇数尺寸敏感，偶数最稳
+                ((w / 2) * 2, (h / 2) * 2)
             }
             _ => (bw, bh),
         };
@@ -211,9 +213,10 @@ impl VideoPlayer {
             .arg("-loglevel")
             .arg("error")
             .arg("-nostdin")
-            // 输入前开启自动旋转：让 ffmpeg 先按容器旋转矩阵把画面转正，
-            // 再进我们的 scale（目标尺寸已按旋转后的宽高算好）
-            .args(["-autorotate", "1"])
+            // 注意：**不要**显式传 -autorotate。
+            // 自动旋转默认就是开启的（容器有旋转矩阵时 ffmpeg 会自己插转置滤镜），
+            // 而某些 ffmpeg 构建把 -autorotate 当**输出**选项，写在 -i 前会让
+            // ffmpeg 直接报错退出 → 一帧都读不到 → 视频被"跳过"。
             .arg("-re")
             .arg("-i")
             .arg(&path)

@@ -4,7 +4,7 @@
 # 用法：
 #   scripts/visual-test.sh                     # 默认测 木纹/花环/炫彩
 #   scripts/visual-test.sh 木纹.png 猫线.png    # 指定相框
-#   PF_FRAME_DEBUG=1 scripts/visual-test.sh    # 同时打开九宫格 Debug Overlay
+#   PHOTO_FRAME_DEBUG_OVERLAY=1 scripts/visual-test.sh   # 同时打开九宫格调试网格
 #
 # 测试素材默认放在 /tmp/pfm/{w16x9,p9x16,s1x1,u21x9}/，每个目录一张图。
 # 运行结束会还原用户配置并重启程序。

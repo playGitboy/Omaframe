@@ -299,7 +299,7 @@ PNG ──降采样(≤512px)──▶ Alpha 二值化 ──边界洪泛──�
 - `src/frame_model.rs`（新）：全部分析逻辑 + `FrameModel` + 运行时遮罩 + 缓存 + 单测
 - `src/geometry.rs`：`RectI`、`layout_adaptive()`（九宫格布局）、`slices_src()`
 - `src/frame.rs`：`FrameSlices`（相框 9 片 + 遮罩 9 片，**按原始分辨率**保存，绘制时 cairo 缩放）
-- `src/window/media_view.rs`：九宫格绘制 + 抗锯齿遮罩 + Debug Overlay（`PF_FRAME_DEBUG=1`）
+- `src/window/media_view.rs`：九宫格绘制 + 抗锯齿遮罩 + Debug Overlay（`PHOTO_FRAME_DEBUG_OVERLAY=1`）
 - `src/config.rs`：`frame.fit = smart | cover`
 
 ### FrameModel 关键字段（**两个概念不要合并**）
@@ -413,3 +413,39 @@ PNG ──降采样(≤512px)──▶ Alpha 二值化 ──边界洪泛──�
 - 视觉回归重跑：3 相框 × 4 比例共 12 张（`target/visual/`），
   无细缝、无变形、无穿框、素材铺满、全部在 720 上限内
 - HEIC ✓ / MOV 竖屏 ✓ / 缝隙消失 ✓ / 上限遵守 ✓
+
+## 三十三、MOV 被"跳过" + 调试网格被误认成渲染 bug（2026-09-30）
+
+### 1. MOV 视频被跳过（一帧都不播）
+
+- **现象**：日志里 `载入视频 …` 正常、`ffmpeg 启动：1080x1922` 正常，但紧接着
+  `视频播放结束（共 0 帧）` → 视频一闪而过，看起来"被跳过"。
+- **根因**：上一轮修 iPhone 旋转时，我在 `-i` 前显式加了 `-autorotate 1`。
+  但**这个 ffmpeg 构建把 `-autorotate` 当作输出选项** →
+  `Option autorotate … cannot be applied to output url 1 … Move this option before the file it belongs to`
+  → ffmpeg 直接报错退出 → 0 帧。
+- **修法**：**删掉显式 `-autorotate`**（自动旋转本来就是默认开启的，容器有旋转矩阵时
+  ffmpeg 会自己插转置滤镜）。顺带把视频目标尺寸取成**偶数**（yuv420p 等格式对奇数敏感）。
+- **教训**：交互式 `ffmpeg` 命令改动后，**必须手动跑一遍同样的参数**看真实报错
+  （app 里 `-loglevel error` + `stderr(Stdio::null())` 会把原因吞掉，只看到"0 帧"）。
+
+### 2. "十字交叉细线"其实是调试网格
+
+- **现象**：相框上出现十字/井字形细线，观感割裂，像是"计算最大内接矩形时画出来的"。
+- **排查**：对**纯色素材（品红）+ 木纹相框**做像素级扫描：
+  媒体内部中央区域 0 个异常点、中心横线 0/142、中心竖线的 52 个点全部是
+  相框顶部报纸角/底部书本的**合法装饰重叠**（`y` 只在媒体上下边缘附近）。
+  → **当前渲染没有任何透明缝线**。
+- **真相**：那是我用 `PF_FRAME_DEBUG=1` 起的**开发调试网格**（切片边框 + 内容区虚线框），
+  正好是十字/井形；用户的截图/观感来自那个实例。
+- **修法（防误判）**：
+  1. 环境变量改成必须显式的 `PHOTO_FRAME_DEBUG_OVERLAY=1`（旧名字不再触发）；
+  2. 一旦开启会在日志里打 `WARN`，方便把"调试网格"和"真渲染问题"分开；
+  3. 测试结束一律**不带任何调试环境变量重启**。
+- **验收方法**（可复用）：用纯色素材 + 无内部装饰的相框，扫描媒体矩形中央 15%~85%，
+  任何非素材色像素都算异常；再沿中心横/竖线逐像素扫一遍。
+
+### 附：切片发丝缝的修法（本轮之前）
+
+九宫格每片用 cairo 填充时**默认开抗锯齿**，相邻片共享边被半透明化 → 发丝细缝。
+修法：填充前 `set_antialias(Antialias::None)` + 每片向外 0.5px overlap（遮罩九片同理）。
