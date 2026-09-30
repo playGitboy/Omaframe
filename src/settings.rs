@@ -506,11 +506,9 @@ fn build(state: &Rc<AppState>) -> Panel {
                 if styles.is_empty() {
                     "程序目录 frame/ 下没有 PNG".to_string()
                 } else {
-                    format!(
-                        "内置相框库 {} 个（{}）",
-                        styles.len(),
-                        crate::config::frame_dir().display()
-                    )
+                    // 不显示相框库路径：那是实现细节（frame/ 可能来自源码目录或
+                    // 可执行文件同级），对用户没有决策价值，只占地方。
+                    format!("内置相框库 {} 个", styles.len())
                 }
             })
             .model(&gtk::StringList::new(&label_refs))
