@@ -161,5 +161,7 @@ src/
   GStreamer/ffmpeg 回调与拖动处理都有 panic 隔离。
 
 深入踩坑记录见 [`docs/PLAN.md`](docs/PLAN.md)；
+**需求清单与禁忌速查**（功能验收 / 审美要求 / 开发流程 / "别再犯"对照表）见
+[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)；
 **后期快速回顾的结论速查**（已验证有效的修复点 / 症状→根因对照表 / 环境事实）见
 [`docs/KEY-FINDINGS.md`](docs/KEY-FINDINGS.md)。
