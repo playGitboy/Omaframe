@@ -157,12 +157,15 @@ impl Tray {
         let cb = this.on_toggle.clone();
         let reg = conn
             .register_object(OBJECT_PATH, &info)
-            .method_call(move |_conn, _sender, _path, _iface, method, params, _inv| {
+            .method_call(move |_conn, _sender, _path, _iface, method, params, inv| {
                 crate::debug!("托盘收到调用：{method} params={params:?}");
                 match method {
                     "Activate" | "SecondaryActivate" | "ContextMenu" => (cb)(),
                     _ => {}
                 }
+                // **必须回一个空回复**：SNI 宿主（quickshell）调用 Activate 后
+                // 等不到 reply 会超时（NoReply），并把该项标为失效 → 图标点不动/消失。
+                let _ = inv.return_value(None);
             })
             .property(move |_conn, _sender, _path, _iface, prop| {
                 let v: glib::Variant = match prop {
@@ -346,6 +349,15 @@ fn icon_pixmap_variant() -> glib::Variant {
             }
         });
     }
-    // (iiay) = (宽, 高, 字节数组)
-    glib::Variant::from((S, S, data))
+    // SNI 的 IconPixmap 实际签名是 **a(iiay)** —— "一个元素的数组"，
+    // 每个元素才是 (宽, 高, ARGB像素)。直接返回 (iiay) 会被 quickshell 拒收：
+    //   "expected a(iiay) got (iiay)"  → 该项被判无效。
+    // glib 需要能静态推断元素类型，(i,i,Vec<u8>) 的 StaticVariantType 恰好是 (iiay)，
+    // 所以直接用它作为数组元素类型即可。
+    let entry: glib::Variant = glib::Variant::from((S, S, data));
+    // SNI 的 IconPixmap 必须是 **a(iiay)**（一个元素的数组），quickshell 会严格校验：
+    //   "expected a(iiay) got (iiay)" → 直接把该项判为无效。
+    // glib 的 array_from_iter(_with_type) 会额外断言子节点类型，这里用最朴素的
+    // 方式：把单元素 Vec 变成 Variant（tuple 有静态类型 → 数组类型自然是 a(iiay)）。
+    glib::Variant::from(vec![entry])
 }
