@@ -56,6 +56,12 @@ impl MediaLibrary {
 
     /// 后台线程扫描（不阻塞 UI）
     pub fn scan(self: &Rc<Self>) {
+        // 防重入：上一次扫描还没跑完就再触发会起两个线程，
+        // 而且 on_scanned 是一次性回调（完成后 drain），容易被吃掉。
+        if matches!(*self.status.borrow(), ScanStatus::Scanning) {
+            crate::debug!("媒体扫描进行中，跳过重复触发");
+            return;
+        }
         *self.status.borrow_mut() = ScanStatus::Scanning;
         let source = self.source.borrow().clone();
         let ctx = self.ctx.clone();

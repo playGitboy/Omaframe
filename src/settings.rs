@@ -86,6 +86,13 @@ pub fn show(state: &Rc<AppState>) {
     if state.reload_from_disk() {
         apply_reloaded(state);
     }
+    // 每次打开面板都**重新扫描媒体目录**：用户很可能刚手动加了新素材，
+    // 桌面组件默认只在启动时扫一次，不重扫就看不到新文件。
+    // 扫描在后台线程（rescan 是异步的），不阻塞面板显示；
+    // 扫完由 after_scan() 刷新当前素材/列表。
+    if let Some(player) = state.player.borrow().clone() {
+        player.rescan();
+    }
     hide(state, "重建");
     let panel = build(state);
     panel.win.present();
