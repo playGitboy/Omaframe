@@ -520,6 +520,13 @@ fn build(state: &Rc<AppState>) -> Panel {
     let g_frame = adw::PreferencesGroup::builder()
         .title("相框")
         .build();
+    // 「启用」放本组第一行：它是相框总开关，应最先看到
+    g_frame.add(&switch_row(
+        "启用",
+        state.clone(),
+        |c| c.frame.enabled,
+        |c, v| c.frame.enabled = v,
+    ));
     // 自适应随机推荐：开启后按素材方向在「横/竖/方」相框里随机挑，
     // 此时"相框样式"由程序决定 → 该行置灰
     let auto_row = switch_row(
@@ -529,12 +536,6 @@ fn build(state: &Rc<AppState>) -> Panel {
         |c, v| c.frame.auto_style = v,
     );
     g_frame.add(&auto_row);
-    g_frame.add(&switch_row(
-        "启用",
-        state.clone(),
-        |c| c.frame.enabled,
-        |c, v| c.frame.enabled = v,
-    ));
     // 相框样式：读取程序目录 frame/ 下的所有 PNG
     {
         let styles = crate::config::list_frame_styles();
@@ -627,9 +628,10 @@ fn build(state: &Rc<AppState>) -> Panel {
         crate::info!("开机启动 → {v}");
     });
     g_general.add(&auto_start_row);
-    page.add(&g_general);
-
+    // 顺序：媒体 → 显示 → 自动轮换 → 视频 → 相框 → 常规
+    // （「相框」是用户最常调的，放前面；「常规」放最后）
     page.add(&g_frame);
+    page.add(&g_general);
 
     // ---------------- 位置 ----------------
     let g_pos = adw::PreferencesGroup::builder().title("位置与外观").build();

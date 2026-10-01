@@ -3,6 +3,13 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.3] - 2026-10-01
+
+### 调整
+- 设置页 · 相框：「启用」移到该组**第一行**（总开关应最先看到）
+- 设置页 · 常规：整组移到「相框」**下方**，段落顺序变为
+  媒体 → 显示 → 自动轮换 → 视频 → 相框 → 常规 → 位置与外观
+
 ## [0.4.2] - 2026-10-01
 
 ### 修复
@@ -149,6 +156,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.4.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.3
 [0.4.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.2
 [0.4.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.1
 [0.4.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.0
