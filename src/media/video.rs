@@ -66,6 +66,10 @@ pub struct VideoPlayer {
     fps: Cell<i32>,
     /// 用户主动暂停（被遮挡暂停不改变它）
     user_paused: Cell<bool>,
+    /// ffprobe 结果缓存（path → 显示尺寸）。
+    /// ffprobe 是**子进程调用**，在主线程上跑会直接冻住 UI（4K 素材可达数百毫秒~秒级），
+    /// 而且每次翻页到同一个视频都会重跑。缓存 + 后台探测两件事一起解决。
+    probe_cache: RefCell<std::collections::HashMap<PathBuf, (i32, i32)>>,
     /// 读线程也要能读到：用原子量跨线程共享（thread_local 是每线程独立的，不能用）
     generation: Arc<AtomicU64>,
     playing_flag: Arc<AtomicBool>,
@@ -110,6 +114,7 @@ impl VideoPlayer {
         Some(Rc::new(Self {
             child: RefCell::new(None),
             ctx: glib::MainContext::default(),
+            probe_cache: RefCell::new(std::collections::HashMap::new()),
             on_event,
             playing: Cell::new(false),
             path: RefCell::new(None),
@@ -186,7 +191,47 @@ impl VideoPlayer {
             return;
         };
         let (bw, bh) = (self.box_w.get(), self.box_h.get());
-        let probed = probe_size(&path);
+        // 先查缓存；没有就**后台**探测并稍后重启读线程，绝不阻塞主线程
+        let probed = match self.probe_cache.borrow().get(&path).copied() {
+            Some(v) => Some(v),
+            None => {
+                let this = self.clone();
+                let p = path.clone();
+                self.ctx.spawn_local(async move {
+                    // 放到后台线程跑 ffprobe（子进程 + 解析都在那儿）
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::Builder::new()
+                        .name("omaframe-ffprobe".into())
+                        .spawn(move || {
+                            let _ = tx.send(probe_size(&p));
+                        })
+                        .ok();
+                    let res = async move {
+                        // 每 20ms 轮询一次结果（探测通常几十 ms；不阻塞主循环）
+                        for _ in 0..500 {
+                            match rx.try_recv() {
+                                Ok(v) => return v,
+                                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                    glib::timeout_future(std::time::Duration::from_millis(20)).await;
+                                }
+                                Err(_) => return None,
+                            }
+                        }
+                        None
+                    }
+                    .await;
+                    if let Some(v) = res {
+                        this.probe_cache.borrow_mut().insert(path.clone(), v);
+                    }
+                    // 结果回来时如果**还是**这个视频且还没起读线程，就现在起
+                    let still = this.path.borrow().as_deref() == Some(path.as_path());
+                    if still && this.child.borrow().is_none() {
+                        this.spawn_reader();
+                    }
+                });
+                return;
+            }
+        };
         let (nw, nh) = match probed {
             Some((vw, vh)) if vw > 0 && vh > 0 => {
                 // 已知真实比例（已按旋转矩阵修正）→ 精确缩放到目标尺寸（不变形）

@@ -3,6 +3,23 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] - 2026-10-01
+
+### 性能
+- **修复启动时主线程被 `ffprobe` 冻住**：视频探测是**子进程调用**，
+  原来在 `spawn_reader` 里**同步**执行，4K 素材可阻塞主线程数百毫秒到秒级，
+  表现为"相框出来了但底图迟迟不出现"。改为：
+  1. 探测放到**后台线程**，结果经主循环回填后**再**启动读帧线程，主线程全程不阻塞；
+  2. 新增 `probe_cache`（path → 显示尺寸），翻页回到同一个视频不再重复探测。
+- 实测（首个素材为 3840×2160 视频）：
+  **窗口+相框 0.25s → 首帧 0.29s → 视频开播 0.34~0.39s**；
+  修复前 ffprobe 期间主线程被占住，首帧在测量窗口内从未出现。
+
+### 说明
+- 媒体目录扫描本来就是后台线程（`LocalMediaSource` + `walkdir`），
+  绘制/几何热路径**不**调用 `lib.current()` / `list_frame_styles()`（只换素材时调），
+  所以素材数量增大不会拖慢每帧开销与翻页速度；本次补齐了视频探测这一处遗漏的阻塞点。
+
 ## [0.4.0] - 2026-10-01
 
 ### 新增
@@ -121,6 +138,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.4.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.1
 [0.4.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.0
 [0.3.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.0
