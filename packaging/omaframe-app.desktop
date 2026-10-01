@@ -11,5 +11,6 @@ Icon=omaframe
 Terminal=false
 StartupNotify=true
 Categories=Graphics;GTK;
-Keywords=photo;frame;picture;wallpaper;desktop;相框;壁纸;照片;
+Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;zhuomianxiangkuang;frame;photo;picture;image;desktop;wallpaper;相框;照片;桌面;壁纸;
+Keywords[zh_CN]=桌面;相框;照片;壁纸;桌面相框;zm;xk;zmxk;
 X-GNOME-UsesNotifications=false

@@ -3,6 +3,15 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.1] - 2026-10-01
+
+### 新增
+- **应用菜单支持拼音首字母搜索**：`.desktop` 增加 Keywords
+  （`zm` / `xk` / `zmxk` 覆盖"桌面""相框""桌面相框"，另含完整拼音与英文别名）。
+  应用菜单本身**不做拼音转换**，只按字面匹配 Name/Keywords/Comment，
+  所以把缩写显式写进 Keywords 才能用首字母定位。
+  同时补 `Keywords[zh_CN]` 本地化条目。
+
 ## [0.2.0] - 2026-10-01
 
 首个功能完整版本。相对 0.1.0 变更较大，故按 minor 递增。
@@ -52,4 +61,5 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.2.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.1
 [0.2.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.0

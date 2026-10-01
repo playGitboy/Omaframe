@@ -6,6 +6,8 @@ Exec=omaframe
 Icon=preferences-desktop-display
 Terminal=false
 # 桌面起来后稍等再启动：不与 Hyprland/omarchy 首屏争资源
+Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;zhuomianxiangkuang;frame;photo;picture;image;desktop;wallpaper;相框;照片;桌面;壁纸;
+# 拼音首字母缩写便于应用菜单搜索（桌面相框 → zm / xk / zmxk）
 X-GNOME-Autostart-Delay=4
 X-GNOME-Autostart-Enabled=true
 # 不弹通知、不阻塞会话启动
