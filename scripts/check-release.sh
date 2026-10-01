@@ -62,6 +62,29 @@ grep -q 'packaging/dependencies.conf' scripts/install.sh \
   && ok "install.sh 使用同一份依赖清单" \
   || bad "install.sh 没有引用 packaging/dependencies.conf（会漂移）"
 
+# ---------------------------------------------------------------- 2b. 相框库必须已提交
+# 打包用的 source 是 **GitHub tag 归档**，不是本地工作区。
+# 若 frame/ 里有未提交的新增/改名，打出来的包仍是旧快照（曾出现
+# 安装版还在用 `大头贴-*`、仓库已改成 `方-*` 的错位）。
+# 规则：**以本机 frame/ 为最新资源**，改完必须先提交，再打 tag 打包。
+if [ -d .git ]; then
+  FRAME_DIRTY="$(git status --porcelain -- frame 2>/dev/null)"
+  if [ -n "$FRAME_DIRTY" ]; then
+    bad "frame/ 有未提交改动，打包会打进旧快照（source 用的是 tag 归档）："
+    echo "$FRAME_DIRTY" | head -10 | sed 's/^/      /'
+    echo "      → 先 git add -A frame \&\& git commit（以本机为最新资源），再打包" >&2
+  else
+    n=$(ls frame/*.png 2>/dev/null | wc -l)
+    ok "frame/ 已全部提交（$n 个相框），打包不会漏"
+  fi
+  # tag 必须指向当前提交，否则 source 归档是旧的
+  if [ -n "$(git tag --points-at HEAD 2>/dev/null)" ]; then
+    ok "HEAD 已有 tag：$(git tag --points-at HEAD | tr '\n' ' ')"
+  else
+    warn "HEAD 没有 tag —— PKGBUILD 的 source 指向 tag 归档，请先 git tag v<版本> 并推送"
+  fi
+fi
+
 # ---------------------------------------------------------------- 3. 动态库齐
 if [ -x target/release/omaframe ]; then
   for so in libgtk-4.so.1 libadwaita-1.so.0 libgtk4-layer-shell.so.0 \

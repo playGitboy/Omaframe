@@ -287,8 +287,13 @@ Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;frame;photo;desktop;相
 ///   4. `<prefix>/share/omaframe/frame`    （make install / install.sh 布局）
 ///   5. `/usr/share/omaframe/frame`        （AUR/系统包布局）
 ///   6. `$XDG_DATA_HOME/omaframe/frame`
-///   7. `<target>/../../frame`             （cargo build/run 的开发布局）
-///   8. 编译期源码目录                    （纯兜底）
+///   7. `<target>/../../frame`             （cargo build/run 的开发布局，**仅 debug**）
+///   8. 编译期源码目录                    （**仅 debug**）
+///
+/// **7/8 只在 debug 构建里参与**：它们依赖“构建机上的源码目录”，是个人路径。
+/// 发布版（release / pacman 包）若带上这条兜底，就会把构建机的绝对路径烧进二进制，
+/// 既不通用、也会在换机器后指向不存在的目录。发布版只应使用**系统通用目录**
+/// （`$OMA_FRAME_DIR` 覆盖 → exe 相对 → `<prefix>/share` → `/usr/share` → `$XDG_DATA_HOME`）。
 pub fn frame_dir() -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -297,20 +302,17 @@ pub fn frame_dir() -> PathBuf {
         candidates.push(PathBuf::from(expand_user(&d)));
     }
 
-    if let Some(d) = std::env::current_exe()
+    let exe_dir = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    if let Some(d) = exe_dir.clone() {
         // 2) 3) 便携布局
         candidates.push(d.join("frame"));
         candidates.push(d.join("../frame"));
         // 4) <prefix>/share/omaframe/frame —— exe 在 <prefix>/bin/omaframe
         if let Some(up) = d.parent() {
             candidates.push(up.join("share").join("omaframe").join("frame"));
-        }
-        // 7) cargo 开发布局：target/release/omaframe → <repo>/frame
-        if let Some(up2) = d.parent().and_then(|p| p.parent()) {
-            candidates.push(up2.join("frame"));
         }
     }
 
@@ -320,8 +322,16 @@ pub fn frame_dir() -> PathBuf {
     if let Ok(d) = std::env::var("XDG_DATA_HOME") {
         candidates.push(PathBuf::from(d).join("omaframe").join("frame"));
     }
-    // 8) 编译期源码目录（最后兜底）
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
+
+    // 7) 8) 仅 debug：开发布局与编译期源码目录（构建机个人路径，发布版不用）
+    if cfg!(debug_assertions) {
+        if let Some(d) = exe_dir {
+            if let Some(up2) = d.parent().and_then(|p| p.parent()) {
+                candidates.push(up2.join("frame"));
+            }
+        }
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
+    }
 
     for c in &candidates {
         if c.is_dir() {

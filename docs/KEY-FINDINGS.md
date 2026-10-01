@@ -771,3 +771,41 @@ crate::controls::paint(&cr, &layout_ctl, &self.controls);
 
 **实测**：首装（清空 config + 模型缓存）→ 媒体目录=当前壁纸、位置(12,12)、350×350、
 间隔5、默认启用相框；横版素材自动选 `横-花环.png`，1080×1920 竖版自动选 `竖-信笺.png`。
+
+### 四十五、打包相框库的两条硬规则（2026-10-02）
+
+**① frame/ 以本机为唯一事实来源，改完必须先提交再打包。**
+
+`PKGBUILD` 的 `source` 是 **GitHub tag 归档**，不是本地工作区。若 `frame/` 有未提交
+的新增/改名，包里仍是旧快照 —— 曾出现安装版还在用 `大头贴-*`、仓库已改成 `方-*`
+的错位（`pacman -U` 后设置页列出的相框和用户改的对不上）。
+
+`scripts/check-release.sh`（已挂 pre-push）现在会**硬拦**两种情况：
+- `git status --porcelain -- frame` 非空 → 报错并提示先提交；
+- HEAD 没有 tag → 警告（source 指向 tag 归档，没 tag 就打不出可下载的包）。
+
+命名约定（程序按前缀分类「横/竖/方」）：`横-*` / `竖-*` / 其余（`方-*`）算方形。
+
+**② 发布版只使用系统通用目录，不带构建机路径。**
+
+`config::frame_dir()` 的候选 7（cargo 开发布局）和 8（`CARGO_MANIFEST_DIR` 编译期源码
+目录）依赖**构建机上的源码路径**，是个人路径。已用 `cfg!(debug_assertions)` 限定为
+**仅 debug 构建**参与；release/pacman 包只剩：
+
+1. `$OMA_FRAME_DIR`（显式覆盖，开发/排查用）
+2. exe 同级 / 上级 `frame/`（便携安装）
+3. `<prefix>/share/omaframe/frame`（`make install` / `install.sh` 布局）
+4. `/usr/share/omaframe/frame`（系统包布局）
+5. `$XDG_DATA_HOME/omaframe/frame`
+
+开发期想让相框指向本仓库（改完重启即生效、不用重打包），用 systemd drop-in 注入
+环境变量，而不是编译进包：
+
+    ~/.config/systemd/user/app-omaframe@autostart.service.d/frame-dir.conf
+    [Service]
+    Environment=OMA_FRAME_DIR=/home/sen/Omaframe/frame
+    # 改完 systemctl --user daemon-reload
+
+注意：**手动从终端跑 `omaframe`（不经 systemd）不带这个变量**，会回落到
+`/usr/share/omaframe/frame`（打包时的快照）。确认当前用哪个：看日志里
+`相框 /…/xxx.png` 的路径，或 `tr '\0' '\n' < /proc/<pid>/environ | grep OMA_FRAME_DIR`。
