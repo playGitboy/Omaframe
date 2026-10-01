@@ -12,6 +12,11 @@ use crate::window::monitor_scale;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+thread_local! {
+    /// 相框库索引指纹（见 MediaPlayer::refresh_frame_index）
+    static FRAME_INDEX_SIG: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
 pub struct MediaPlayer {
     state: Rc<AppState>,
     lib: Rc<MediaLibrary>,
@@ -540,6 +545,62 @@ impl MediaPlayer {
         crate::debug!("相框外扩 = {grow}%（素材恒铺满内孔）");
     }
 
+    /// 记录当前相框库指纹（load_frame 成功后调用，避免下次打开设置误判为"变了"）
+    fn sync_frame_index_sig() {
+        let dir = crate::config::frame_dir();
+        let mut names: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("png")) != Some(true) { continue; }
+                let (sz, mt) = match e.metadata() {
+                    Ok(m) => (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)),
+                    Err(_) => (0, 0),
+                };
+                names.push(format!("{}:{sz}:{mt}", p.file_name().unwrap_or_default().to_string_lossy()));
+            }
+        }
+        names.sort();
+        FRAME_INDEX_SIG.with(|s| *s.borrow_mut() = names.join("|"));
+    }
+
+    /// 相框库"索引指纹"：文件名 + 大小 + mtime 的指纹。
+    /// 用来判断用户是否手动增删/替换了相框图片。
+    /// 重建相框库索引：扫描 frame/ 下的 PNG，算出指纹。
+    ///
+    /// 用户可能**手动往相框目录里加/删/换图片**，而相框列表与渲染切片
+    /// 之前只在启动时读一次 → 新加的相框要重启才看得到、被替换的相框仍是旧的。
+    /// 这里在打开设置面板时调用：指纹没变就什么都不做（不白重载），
+    /// 变了就 `load_frame()` 整体重建（切片缓存从空开始，会按
+    /// path+mtime+size+版本 的模型缓存判断是否需要重新分析）。
+    pub fn refresh_frame_index(self: &Rc<Self>) {
+        let dir = crate::config::frame_dir();
+        let mut names: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("png")) != Some(true) {
+                    continue;
+                }
+                let (sz, mt) = match e.metadata() {
+                    Ok(m) => (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)),
+                    Err(_) => (0, 0),
+                };
+                names.push(format!("{}:{sz}:{mt}", p.file_name().unwrap_or_default().to_string_lossy()));
+            }
+        }
+        names.sort();
+        let sig = names.join("|");
+        let changed = FRAME_INDEX_SIG.with(|s| s.borrow().as_str() != sig);
+        if !changed {
+            crate::debug!("相框库索引无变化（{} 个）", names.len());
+            return;
+        }
+        FRAME_INDEX_SIG.with(|s| *s.borrow_mut() = sig);
+        crate::info!("相框库索引已更新（{} 个），重建相框", names.len());
+        self.load_frame();
+    }
+
     pub fn load_frame(&self) {
         let (enabled, style, legacy, connector) = {
             let cfg = self.state.config.borrow();
@@ -608,6 +669,7 @@ impl MediaPlayer {
                 }
                 *self.frame.borrow_mut() = Some(Rc::new(r));
                 self.refresh_frame();
+                Self::sync_frame_index_sig();
             }
             None => {
                 crate::warn!("相框加载失败：{path}");

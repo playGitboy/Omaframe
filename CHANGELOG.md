@@ -3,6 +3,15 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.3] - 2026-10-01
+
+### 新增
+- 打开设置面板时**重建相框库索引**：扫描 frame/ 算出"文件名+大小+mtime"指纹，
+  与上次一致就跳过（不做无谓重载），变了就 `load_frame()` 整体重建。
+  用户手动往相框目录**新增/删除/替换**相框图后，不用重启即可在设置里看到并使用。
+  之前相框列表与渲染切片只在启动时读一次。
+- 相框库新增 5 个：横-马里奥 简约、竖-我的世界、竖-林克、竖-耀西、竖-花环（共 34 个）
+
 ## [0.2.2] - 2026-10-01
 
 ### 维护
@@ -72,6 +81,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.2.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.3
 [0.2.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.2
 [0.2.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.1
 [0.2.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.0

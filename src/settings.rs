@@ -91,7 +91,8 @@ pub fn show(state: &Rc<AppState>) {
     // 扫描在后台线程（rescan 是异步的），不阻塞面板显示；
     // 扫完由 after_scan() 刷新当前素材/列表。
     if let Some(player) = state.player.borrow().clone() {
-        player.rescan();
+        player.rescan();                 // 重扫媒体目录（用户可能新加了素材）
+        player.refresh_frame_index();    // 重建相框库索引（用户可能新加了相框图）
     }
     hide(state, "重建");
     let panel = build(state);
