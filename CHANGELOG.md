@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.2] - 2026-10-01
+
+### 维护
+- 相框库更新：`横-木纹.png` 换成 1200×651 更高分辨率源图、`横-科技.png` 换成更高版本；
+  移除下载残留 `横-科技1.png`（git 索引已与磁盘对齐：29 = 29）
+
+### 修复
+- **安装目录从不清理陈旧相框**：`make install` / `scripts/install.sh` 只覆盖同名文件，
+  源码里删掉的相框会一直留在 `share/omaframe/frame` 里被程序列出来。
+  现在改为先清空再拷贝，保证安装目录与源码目录一致。
+
 ## [0.2.1] - 2026-10-01
 
 ### 新增
@@ -61,5 +72,6 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.2.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.2
 [0.2.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.1
 [0.2.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.0

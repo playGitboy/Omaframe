@@ -134,8 +134,10 @@ say "编译（cargo build --release，可能需要几分钟）"
 # ---------------------------------------------------------------- 安装
 say "安装到 $PREFIX"
 install -Dm755 "$ROOT/target/release/omaframe" "$BINDIR/omaframe"
-# 相框库：必须一起装，否则用户机器上 frame_dir() 找不到任何相框
+# 相框库：必须一起装，否则用户机器上 frame_dir() 找不到任何相框。
+# 先清空再拷，保证与源码目录**一致**（否则删掉的旧相框会一直留在安装目录里）。
 install -d "$FRAMEDIR"
+rm -f "$FRAMEDIR"/*.png
 install -Dm644 "$ROOT"/frame/*.png "$FRAMEDIR"/ 2>/dev/null
 [ -d "$HOME/.config/autostart" ] && install -Dm644 "$ROOT/packaging/omaframe.desktop" "$AUTOSTART/omaframe.desktop"
 # 系统菜单入口：autostart 项不会出现在应用菜单里，必须另装 applications/ 项

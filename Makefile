@@ -30,6 +30,7 @@ install: build
 	@# 相框库必须一起装：frame_dir() 按 exe 同级/上级/编译期路径找 frame/，
 	@# 换台机器三处都不存在 → 用户看到"相框库为空"。
 	install -d $(DATADIR)/frame
+	rm -f $(DATADIR)/frame/*.png          # 先清空，保证与源码目录一致
 	install -Dm644 frame/*.png $(DATADIR)/frame/
 	@# 系统菜单入口：autostart 项**不会**出现在应用菜单里，必须另装 applications/ 项
 	install -Dm644 packaging/omaframe-app.desktop $(APPDIR)/$(PKG).desktop

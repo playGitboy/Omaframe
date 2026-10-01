@@ -1,7 +1,7 @@
 # Maintainer: Omaframe contributors
 # Contributor: playGitboy
 pkgname=omaframe
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc="Omarchy 桌面电子相框：把本地图片/视频以自适应 PNG 相框摆在桌面上"
 arch=('x86_64' 'aarch64')
