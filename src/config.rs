@@ -61,6 +61,8 @@ pub fn expand_user(p: &str) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// 开机启动（XDG autostart 项）。**默认开启**；设置页可关。
+    pub autostart: bool,
     pub source: SourceConfig,
     pub display: DisplayConfig,
     pub slideshow: SlideshowConfig,
@@ -128,6 +130,10 @@ pub struct FrameConfig {
     pub style: String,
     /// 相框相对素材的外扩百分比（默认 5 = 相框每边大 2.5%，四周居中）
     pub grow_percent: u8,
+    /// **自适应随机推荐**：开启后忽略 `style`，每次换素材按素材纵横比
+    /// 在「横/竖/方」相框里随机挑一个（见 player::pick_frame_for_media）。
+    /// 开启时设置页的"相框样式"不可用。
+    pub auto_style: bool,
     /// 调试浮层（持久化，重启后保持）
     pub debug_hud: bool,
     /// 相框适配模式：
@@ -214,12 +220,47 @@ impl Default for FrameConfig {
             enabled: true,
             desktop_enabled: true,
             style: String::new(),
+            auto_style: false,
             grow_percent: 3,
             fit: "smart".into(),
             debug_hud: false,
             path: String::new(),
         }
     }
+}
+
+/// 同步"开机启动"：写入/删除 XDG autostart 项。
+///
+/// 不做成"安装时一次性写死"，而是**由配置驱动**：设置页开关改 `config.autostart`，
+/// 改完立即调本函数落盘；启动时再对账一次（配置为 true 但文件被删了会补回来）。
+/// `Exec` 用当前可执行文件绝对路径 —— autostart 由会话拉起，不保证 PATH 里有 ~/.local/bin。
+pub fn sync_autostart(enabled: bool) -> std::io::Result<()> {
+    let dir = home_dir().join(".config").join("autostart");
+    let path = dir.join("omaframe.desktop");
+    if !enabled {
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir)?;
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omaframe"));
+    let body = format!(
+        "[Desktop Entry]\n\
+Type=Application\n\
+Name=桌面相框\n\
+Name[en]=Desktop Photo Frame\n\
+Comment=把本地图片/视频以自适应 PNG 相框摆在桌面上\n\
+Comment[en]=Show local photos/videos on the desktop inside an adaptive PNG frame\n\
+Exec={}\n\
+Terminal=false\n\
+X-GNOME-Autostart-Delay=4\n\
+X-GNOME-Autostart-Enabled=true\n\
+X-GNOME-Autostart-NoNotification=true\n\
+X-StartupNotify=false\n\
+OnlyShowIn=X-Hyprland;\n\
+Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;frame;photo;desktop;相框;照片;桌面;\n",
+        exe.display()
+    );
+    std::fs::write(&path, body)
 }
 
 /// 内置相框库目录。
@@ -313,6 +354,7 @@ impl Default for WindowConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            autostart: true,
             source: Default::default(),
             display: Default::default(),
             slideshow: Default::default(),

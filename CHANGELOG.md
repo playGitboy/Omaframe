@@ -3,6 +3,19 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-10-01
+
+### 新增
+- **设置页 · 常规 · 开机启动（默认开启）**：开关直接读写
+  `~/.config/autostart/omaframe.desktop`，改动即时生效；启动时对账一次
+  （配置为开但项被删则补回，为关则移除）。`Exec` 用当前可执行文件**绝对路径**，
+  不依赖 PATH。原来自启项只在安装时写一次，删掉就没了。
+- **设置页 · 相框 · 自适应随机推荐**：开启后**禁用"相框样式"下拉**（置灰并提示），
+  改为每次换素材时按素材纵横比判定「横/竖/方」，在该类别相框里**随机挑一个**。
+  类别按相框库命名约定识别（`横-*` / `竖-*` / 其余算"方"，如 `方-*`、`大头贴-*`）；
+  纵横比判定留 ±15% 容差（>1.15 横 / <0.87 竖），避免 4:3 与 5:4 之间来回跳。
+  关闭时保持原行为（仅在 style 为空时按首个素材方向选一次）。
+
 ## [0.3.1] - 2026-10-01
 
 ### 变更
@@ -108,6 +121,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.4.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.0
 [0.3.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.0
 [0.2.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.3

@@ -520,6 +520,15 @@ fn build(state: &Rc<AppState>) -> Panel {
     let g_frame = adw::PreferencesGroup::builder()
         .title("相框")
         .build();
+    // 自适应随机推荐：开启后按素材方向在「横/竖/方」相框里随机挑，
+    // 此时"相框样式"由程序决定 → 该行置灰
+    let auto_row = switch_row(
+        "自适应随机推荐",
+        state.clone(),
+        |c| c.frame.auto_style,
+        |c, v| c.frame.auto_style = v,
+    );
+    g_frame.add(&auto_row);
     g_frame.add(&switch_row(
         "启用",
         state.clone(),
@@ -573,8 +582,52 @@ fn build(state: &Rc<AppState>) -> Panel {
                 }
             }
         });
+        // auto_style 开 → 样式由程序决定，禁用下拉
+        let sync_combo = {
+            let combo = combo.clone();
+            let st = state.clone();
+            move || {
+                let auto = st.config.borrow().frame.auto_style;
+                combo.set_sensitive(!auto);
+                let sub = if auto {
+                    "已开启「自适应随机推荐」，由程序按素材方向自动挑选".to_string()
+                } else if styles.is_empty() {
+                    "程序目录 frame/ 下没有 PNG".to_string()
+                } else {
+                    format!("内置相框库 {} 个", styles.len())
+                };
+                combo.set_subtitle(&sub);
+            }
+        };
+        sync_combo();
+        auto_row.connect_active_notify({
+            let sync_combo = sync_combo.clone();
+            move |_| {
+                sync_combo();
+            }
+        });
         g_frame.add(&combo);
     }
+
+    // ---------------- 常规 ----------------
+    let g_general = adw::PreferencesGroup::builder().title("常规").build();
+    let st_auto = state.clone();
+    let auto_start_row = adw::SwitchRow::builder()
+        .title("开机启动")
+        .subtitle("登录后自动运行（写入 ~/.config/autostart）")
+        .active(state.config.borrow().autostart)
+        .build();
+    auto_start_row.connect_active_notify(move |r| {
+        let v = r.is_active();
+        st_auto.update(|c| c.autostart = v);
+        // 立即落盘/删除 autostart 项（不必等重启）
+        if let Err(e) = crate::config::sync_autostart(v) {
+            crate::warn!("同步开机启动失败：{e}");
+        }
+        crate::info!("开机启动 → {v}");
+    });
+    g_general.add(&auto_start_row);
+    page.add(&g_general);
 
     page.add(&g_frame);
 

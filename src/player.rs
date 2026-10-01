@@ -703,33 +703,82 @@ impl MediaPlayer {
     }
 
     /// 组件尺寸变化后重新生成相框纹理
-    /// 首次加载素材时按其方向自动选一套默认相框：
-    /// 横版（宽≥高）→ `横-花环.png`，竖版 → `竖-花环.png`。
-    ///
-    /// **只在用户没自定义过时生效**：默认配置里 `frame.style` 留空，
-    /// 这里选中后会写回配置；此后 style 非空 → 本函数直接跳过，
-    /// 即"用户改过相框选项就以用户设置为准，重启不再覆盖"。
-    /// 仅当 `frame.enabled` 且 `frame.style` 为空（用户没手动选过）时生效，
-    /// 选完写回配置，之后不再覆盖。候选不在相框库里则不改。
-    fn auto_pick_frame_style(&self, w: i32, h: i32) {
+    /// 按**素材方向**决定相框类别：横版（宽>高）/ 竖版 / 方版。
+    fn media_category(w: i32, h: i32) -> &'static str {
+        // 允许 ±15% 的容差判为"方"（避免 4:3 与 5:4 之间来回跳）
+        let r = w as f64 / h.max(1) as f64;
+        if r > 1.15 {
+            "横"
+        } else if r < 0.87 {
+            "竖"
+        } else {
+            "方"
+        }
+    }
+
+    /// 相框库里属于某类别的文件名。库的命名约定：`横-*` / `竖-*`，其余（如 `大头贴-*`）算"方"。
+    fn frames_in_category(cat: &str) -> Vec<String> {
+        crate::config::list_frame_styles()
+            .into_iter()
+            .filter(|n| {
+                let c = if n.starts_with("横-") {
+                    "横"
+                } else if n.starts_with("竖-") {
+                    "竖"
+                } else {
+                    "方"
+                };
+                c == cat
+            })
+            .collect()
+    }
+
+    /// 为当前素材挑一个相框：
+    /// - `auto_style` 开：按素材方向在对应类别里**随机**挑（每次换素材都可能不同）
+    /// - `auto_style` 关：保持原行为 —— 只在 style 为空时按方向选一次，之后不再改
+    fn auto_pick_frame_style(self: &Rc<Self>, w: i32, h: i32) {
         if w <= 0 || h <= 0 {
             return;
         }
-        let needs = {
+        let (enabled, auto, style_empty) = {
             let cfg = self.state.config.borrow();
-            cfg.frame.enabled && cfg.frame.style.trim().is_empty()
+            (
+                cfg.frame.enabled,
+                cfg.frame.auto_style,
+                cfg.frame.style.trim().is_empty(),
+            )
         };
-        if !needs {
+        if !enabled {
             return;
         }
-        let pick = if w >= h { "横-花环.png" } else { "竖-花环.png" };
-        if !crate::config::list_frame_styles().iter().any(|s| s == pick) {
-            crate::debug!("自动选相框：候选 {pick} 不在相框库，保持未选");
-            return;
+        if !auto && !style_empty {
+            return; // 用户已手动选过样式，不干预
         }
-        self.state.update(|c| c.frame.style = pick.to_string());
-        crate::info!("按首个素材方向自动选相框：{pick}");
-        // 立刻应用（style 变了，相框需重载）
+        let cat = Self::media_category(w, h);
+        let pool = Self::frames_in_category(cat);
+        let Some(pick) = (if pool.is_empty() {
+            None
+        } else if auto {
+            // 随机推荐：同一类别内随机（用 rand，避免每次都是第一个）
+            use rand::seq::IndexedRandom;
+            pool.choose(&mut rand::rng()).cloned()
+        } else {
+            pool.first().cloned()
+        }) else {
+            crate::debug!("相框库没有「{cat}」类相框，保持当前样式");
+            return;
+        };
+        // auto 模式下每次都换；非 auto 模式只在 style 为空时设一次
+        let cur = self.state.config.borrow().frame.style.clone();
+        if auto && cur == pick {
+            return; // 恰好还是同一个，省一次重载
+        }
+        self.state.update(|c| c.frame.style = pick.clone());
+        crate::info!(
+            "{}：{cat}版素材 → 相框 {pick}",
+            if auto { "自适应随机推荐" } else { "按首个素材方向自动选择" }
+        );
+        self.load_frame();
         self.refresh_frame();
     }
 
@@ -763,7 +812,7 @@ impl MediaPlayer {
         }
     }
 
-    fn apply_image(&self, tex: gdk::Texture, size: (i32, i32), caption: &str) {
+    fn apply_image(self: &Rc<Self>, tex: gdk::Texture, size: (i32, i32), caption: &str) {
         let Some(window) = self.state.window() else {
             return;
         };

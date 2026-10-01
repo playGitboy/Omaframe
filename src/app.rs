@@ -253,6 +253,14 @@ pub fn run(args: &[String]) -> Result<u8, String> {
     }
 
     let state = AppState::boot();
+    // 开机启动对账：配置为 true 但 autostart 项缺失（被删/换机器）时补回来；
+    // 配置为 false 则确保项已移除。这样"默认开启"对新装和已有用户都成立。
+    {
+        let want = state.config.borrow().autostart;
+        if let Err(e) = crate::config::sync_autostart(want) {
+            crate::warn!("同步开机启动失败：{e}");
+        }
+    }
     crate::settings::serve_control(state.clone());
 
     // 应用标志：**只保留 NON_UNIQUE**。
