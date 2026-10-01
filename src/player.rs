@@ -23,6 +23,11 @@ pub struct MediaPlayer {
     images: Rc<ImageService>,
     slides: Rc<Slideshow>,
     /// PNG 相框（配置启用时）
+    /// `auto_style` 重入守卫 + 记忆：**每个素材只随机选一次**。
+    /// 不加会死循环：apply_image → auto_pick → state.update/load_frame → 回调 →
+    /// 再次 apply_image → 又随机选 → …（实测 7 秒写盘 181 次、相框疯狂跳动）。
+    auto_pick_guard: std::cell::Cell<bool>,
+    auto_pick_memo: RefCell<Option<(usize, usize, i32, i32)>>,
     frame: RefCell<Option<Rc<crate::frame::FrameRenderer>>>,
     /// 视频播放器（无 GStreamer/无解码器时为 None → 跳过视频）
     video: RefCell<Option<Rc<crate::media::video::VideoPlayer>>>,
@@ -100,6 +105,8 @@ impl MediaPlayer {
             slides,
             frame: RefCell::new(None),
             video: RefCell::new(None),
+            auto_pick_guard: std::cell::Cell::new(false),
+            auto_pick_memo: RefCell::new(None),
             current_is_video: Cell::new(false),
             drag: RefCell::new(DragState::default()),
         });
@@ -754,6 +761,20 @@ impl MediaPlayer {
         if !auto && !style_empty {
             return; // 用户已手动选过样式，不干预
         }
+        // **重入守卫**：本函数会改配置并重载相框，可能经回调再回到 apply_image，
+        // 没有守卫就会无限自我触发（相框疯狂跳、配置疯狂写盘）。
+        if self.auto_pick_guard.replace(true) {
+            return;
+        }
+        // 提前返回的分支必须解除守卫
+        let _guard = scopeguard_like(self);
+        // **每个素材只随机选一次**：同一素材（索引/数量/尺寸都没变）重复调用直接跳过，
+        // 这样相框只随自动轮换/手动翻页变化，不会自己转个不停。
+        let key = (self.lib.index(), self.lib.count(), w, h);
+        if auto && self.auto_pick_memo.borrow().as_ref() == Some(&key) {
+            return;
+        }
+
         let cat = Self::media_category(w, h);
         let pool = Self::frames_in_category(cat);
         let Some(pick) = (if pool.is_empty() {
@@ -772,6 +793,9 @@ impl MediaPlayer {
         let cur = self.state.config.borrow().frame.style.clone();
         if auto && cur == pick {
             return; // 恰好还是同一个，省一次重载
+        }
+        if auto {
+            *self.auto_pick_memo.borrow_mut() = Some(key);
         }
         self.state.update(|c| c.frame.style = pick.clone());
         crate::info!(
@@ -1023,4 +1047,17 @@ fn resolve_frame_name(dir: &std::path::Path, style: &str) -> Option<String> {
     }
     // 3) 库里第一个（按名称排序）
     list().into_iter().next()
+}
+
+/// 极简作用域守卫：离开作用域时把 `Cell<bool>` 复位。
+/// 用途：`auto_pick_frame_style` 有多条提前返回路径，手写复位容易漏；
+/// 这个守卫保证无论从哪条路径返回都会解除重入标记。
+struct GuardOnDrop<'a>(&'a std::cell::Cell<bool>);
+impl Drop for GuardOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+fn scopeguard_like(p: &MediaPlayer) -> GuardOnDrop<'_> {
+    GuardOnDrop(&p.auto_pick_guard)
 }

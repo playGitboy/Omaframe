@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.2] - 2026-10-01
+
+### 修复
+- **开启「自适应随机推荐」后相框无限轮动**：`auto_pick_frame_style` 会改配置并重载相框，
+  而这条链路会经回调再次回到 `apply_image` → 又随机选一个相框 → 自我无限触发。
+  实测 7 秒内**写盘 181 次**、相框疯狂跳动、完全不按轮换间隔。
+  修法两条：
+  1. **重入守卫**（作用域守卫，所有提前返回路径都会解除），杜绝同步自触发；
+  2. **每个素材只随机选一次**（记忆 `索引/总数/尺寸`），同一素材重复调用直接跳过。
+  实测：写盘 181 → **1 次**，相框只随自动轮换/手动翻页变化。
+
 ## [0.4.1] - 2026-10-01
 
 ### 性能
@@ -138,6 +149,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.4.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.2
 [0.4.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.1
 [0.4.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.0
 [0.3.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.1
