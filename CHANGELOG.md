@@ -3,6 +3,14 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-10-01
+
+### 变更
+- **首装默认相框**：首个素材为横向用 `横-花环.png`，竖向（或方形）用 `竖-花环.png`
+  （此前竖向是 `竖-信笺.png`）。
+- 明确"用户自定义过相框就不覆盖"的契约：默认配置 `frame.style` 留空 → 首次按方向自动选
+  并写回配置；此后 style 非空，自动选择逻辑直接跳过，**重启以用户设置为准**。
+
 ## [0.3.0] - 2026-10-01
 
 ### 修复
@@ -100,6 +108,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.3.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.0
 [0.2.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.3
 [0.2.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.2
