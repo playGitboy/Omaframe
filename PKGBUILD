@@ -15,7 +15,7 @@ optdepends=('ffmpeg: 视频解码（缺失时仅显示图片）'
             'imagemagick: HEIC/HEIF 相框素材回退解码')
 # 源码来自 GitHub tag 归档（必须可直接下载，AUR/pacman 才能构建）
 source=("$pkgname-$pkgver.tar.gz::https://github.com/playGitboy/Omaframe/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('dbfba3ddcdc534c0c69fc3fbf44cba95d0cccf8d467df7875ab463566f71e1a3')   # GitHub tag v0.4.4 归档
+sha256sums=('122eb49bcf40acba8e42e73c10c22d239d9d416b54c4f6355a0adbdc4efda2e7')   # GitHub tag v0.4.5 归档
 provides=("$pkgname")
 conflicts=()
 backup=()

@@ -6,6 +6,10 @@
 ## [0.4.5] - 2026-10-01
 
 ### 修复
+- **开机启动（autostart）修复**：去掉 autostart 项的 `OnlyShowIn=X-Hyprland`。
+  systemd 的 xdg-autostart 生成器会拿 `$XDG_CURRENT_DESKTOP`（本机 Hyprland）去匹配它，
+  规范里的自定义桌面名却要写 `X-Hyprland` → 永远对不上 → 单元被判 `exec-condition`
+  **静默跳过、永不自启**。程序在非 Hyprland 下会优雅降级，故不限制桌面环境。
 - **贴靠的底/右边距比设置值小一截**（如选左下角+边距30，底部几乎贴边、左侧却
   看着正常）：贴靠原按「整屏几何」算，但相框画在 layer surface 坐标里，
   Hyprland 把 surface 放在顶栏下方（实测 surface xywh=`0 26 1600 900`，屏幕高900，
