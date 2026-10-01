@@ -287,8 +287,10 @@ Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;frame;photo;desktop;相
 ///   4. `<prefix>/share/omaframe/frame`    （make install / install.sh 布局）
 ///   5. `/usr/share/omaframe/frame`        （AUR/系统包布局）
 ///   6. `$XDG_DATA_HOME/omaframe/frame`
-///   7. `<target>/../../frame`             （cargo build/run 的开发布局，**仅 debug**）
-///   8. 编译期源码目录                    （**仅 debug**）
+///   （仅 debug 构建，排在系统目录**之前**：`cargo run` 必须读你正在改的仓库 frame/，
+///    否则本机装了包后会去读安装快照）
+///   7. `<target>/../../frame`             （cargo build/run 的开发布局）
+///   8. 编译期源码目录
 ///
 /// **7/8 只在 debug 构建里参与**：它们依赖“构建机上的源码目录”，是个人路径。
 /// 发布版（release / pacman 包）若带上这条兜底，就会把构建机的绝对路径烧进二进制，
@@ -310,6 +312,16 @@ pub fn frame_dir() -> PathBuf {
         // 2) 3) 便携布局
         candidates.push(d.join("frame"));
         candidates.push(d.join("../frame"));
+        // 7) 仅 debug：cargo 开发布局 target/debug/omaframe → <repo>/frame
+        //    必须排在系统目录**之前**，否则本机装了包之后 `cargo run`
+        //    会去读安装快照，而不是你正在改的仓库 frame/。
+        if cfg!(debug_assertions) {
+            if let Some(up2) = d.parent().and_then(|p| p.parent()) {
+                candidates.push(up2.join("frame"));
+            }
+            // 8) 仅 debug：编译期源码目录
+            candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
+        }
         // 4) <prefix>/share/omaframe/frame —— exe 在 <prefix>/bin/omaframe
         if let Some(up) = d.parent() {
             candidates.push(up.join("share").join("omaframe").join("frame"));
@@ -321,16 +333,6 @@ pub fn frame_dir() -> PathBuf {
     // 6) XDG
     if let Ok(d) = std::env::var("XDG_DATA_HOME") {
         candidates.push(PathBuf::from(d).join("omaframe").join("frame"));
-    }
-
-    // 7) 8) 仅 debug：开发布局与编译期源码目录（构建机个人路径，发布版不用）
-    if cfg!(debug_assertions) {
-        if let Some(d) = exe_dir {
-            if let Some(up2) = d.parent().and_then(|p| p.parent()) {
-                candidates.push(up2.join("frame"));
-            }
-        }
-        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
     }
 
     for c in &candidates {
