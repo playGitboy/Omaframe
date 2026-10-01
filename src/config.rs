@@ -234,6 +234,12 @@ impl Default for FrameConfig {
 /// 不做成"安装时一次性写死"，而是**由配置驱动**：设置页开关改 `config.autostart`，
 /// 改完立即调本函数落盘；启动时再对账一次（配置为 true 但文件被删了会补回来）。
 /// `Exec` 用当前可执行文件绝对路径 —— autostart 由会话拉起，不保证 PATH 里有 ~/.local/bin。
+///
+/// **不能写 `OnlyShowIn`**：systemd 的 xdg-autostart 生成器会拿
+/// `$XDG_CURRENT_DESKTOP`（本机是 `Hyprland`）去匹配它，而规范里的自定义桌面名要写
+/// `X-Hyprland` → 两者永远对不上 → 单元被判 `exec-condition` **静默跳过，从不自启**
+/// （实测：`systemd-xdg-autostart-condition "X-Hyprland" ""` 返回 1）。
+/// 程序在非 Hyprland 下也会优雅降级（无 layer-shell 则退 toplevel），故不限制桌面环境。
 pub fn sync_autostart(enabled: bool) -> std::io::Result<()> {
     let dir = home_dir().join(".config").join("autostart");
     let path = dir.join("omaframe.desktop");
@@ -251,7 +257,6 @@ Terminal=false\n\
 X-GNOME-Autostart-Delay=4\n\
 X-GNOME-Autostart-NoNotification=true\n\
 X-StartupNotify=false\n\
-OnlyShowIn=X-Hyprland;\n\
 Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;frame;photo;desktop;相框;照片;桌面;\n\
 {hidden}",
         exe.display(),

@@ -13,5 +13,6 @@ X-GNOME-Autostart-Enabled=true
 # 不弹通知、不阻塞会话启动
 X-GNOME-Autostart-NoNotification=true
 X-StartupNotify=false
-# 兼容性：GNOME 规范要求自定义桌面名用 X- 前缀，旧版用裸 Hyprland 会被 desktop-file-validate 判为非法
-OnlyShowIn=X-Hyprland;
+# 不设 OnlyShowIn：systemd 拿 $XDG_CURRENT_DESKTOP（本机为 Hyprland）匹配它，
+# 写 X-Hyprland / Hyprland 都对不上 → 单元被判 exec-condition 静默跳过、永不自启。
+# 程序在非 Hyprland 下会优雅降级，故不限制桌面环境。
