@@ -3,6 +3,21 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.5] - 2026-10-01
+
+### 修复
+- **贴靠的底/右边距比设置值小一截**（如选左下角+边距30，底部几乎贴边、左侧却
+  看着正常）：贴靠原按「整屏几何」算，但相框画在 layer surface 坐标里，
+  Hyprland 把 surface 放在顶栏下方（实测 surface xywh=`0 26 1600 900`，屏幕高900，
+  底部多出 26px 不可见）→ 底边距平白少 26（30 变 4）。
+  改用合成器真实的 reserved 区（`hypr::monitor_reserved()` 读 `hyprctl -j monitors`）
+  算出可见可用区再贴靠，取不到则按整屏（行为不变）。
+- **首摆放后相框尺寸变化没带动位置**：首摆放用画布尺寸 window.width/height 估算，
+  而相框在画布内不占满（实测画布384x384、相框仅403x252）。现在首摆放后随素材
+  比例真实确定时跟随贴靠，直到用户自己拖动过（交还控制权）。
+
+验证：bottom-left + 边距30，稳定后左30 / 下30（修复前 左32 / 下4）。
+
 ## [0.4.4] - 2026-10-01
 
 ### 打包 / 分发
@@ -174,6 +189,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.4.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.5
 [0.4.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.4
 [0.4.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.3
 [0.4.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.2
