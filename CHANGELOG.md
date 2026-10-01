@@ -3,6 +3,15 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.4] - 2026-10-01
+
+### 文档
+- **README 拆成中英两份**：`README.md` 改为英文（GitHub 默认展示），
+  新增 `readme_zh.md` 中文版，两者互相链接。
+- 重写功能介绍：目录即相册 / 自动轮播 / 30+ 套相框 + 智能算法适配 /
+  任意位置拖动 / 右下角缩放 / 轻点翻页 / 被遮挡自动暂停 / 托盘设置面板，
+  并补上实测支持的格式清单与开箱默认值。
+
 ## [0.4.3] - 2026-10-01
 
 ### 调整
@@ -156,6 +165,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.4.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.4
 [0.4.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.3
 [0.4.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.2
 [0.4.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.1

@@ -75,7 +75,7 @@ else
 fi
 
 # ---------------------------------------------------------------- 4. 打包必需文件
-for f in PKGBUILD CHANGELOG.md LICENSE README.md packaging/omaframe.desktop \
+for f in PKGBUILD CHANGELOG.md LICENSE README.md readme_zh.md packaging/omaframe.desktop \
          packaging/omaframe-app.desktop packaging/omaframe.svg \
          packaging/dependencies.conf scripts/install.sh scripts/optimize-frames.py; do
   [ -f "$f" ] && ok "$f 存在" || bad "缺少 $f"
