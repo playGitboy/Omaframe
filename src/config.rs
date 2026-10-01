@@ -237,10 +237,6 @@ impl Default for FrameConfig {
 pub fn sync_autostart(enabled: bool) -> std::io::Result<()> {
     let dir = home_dir().join(".config").join("autostart");
     let path = dir.join("omaframe.desktop");
-    if !enabled {
-        let _ = std::fs::remove_file(&path);
-        return Ok(());
-    }
     std::fs::create_dir_all(&dir)?;
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omaframe"));
     let body = format!(
@@ -253,12 +249,21 @@ Comment[en]=Show local photos/videos on the desktop inside an adaptive PNG frame
 Exec={}\n\
 Terminal=false\n\
 X-GNOME-Autostart-Delay=4\n\
-X-GNOME-Autostart-Enabled=true\n\
 X-GNOME-Autostart-NoNotification=true\n\
 X-StartupNotify=false\n\
 OnlyShowIn=X-Hyprland;\n\
-Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;frame;photo;desktop;相框;照片;桌面;\n",
-        exe.display()
+Keywords=oma;omaframe;omf;zm;xk;zmxk;zhuomian;xiangkuang;frame;photo;desktop;相框;照片;桌面;\n\
+{hidden}",
+        exe.display(),
+        // 关闭时用 Hidden（XDG 规定的"屏蔽系统级 autostart 项"方式），
+        // 而不是删文件 —— 因为 pacman 包会在 /etc/xdg/autostart 装一份，
+        // 删掉用户文件反而会让系统那份生效（用户关了却仍然自启）。
+        // 这里总是写用户项；开=正常，关=Hidden=true。两者都能覆盖系统项。
+        hidden = if enabled {
+            "X-GNOME-Autostart-Enabled=true\n"
+        } else {
+            "Hidden=true\nX-GNOME-Autostart-Enabled=false\n"
+        }
     );
     std::fs::write(&path, body)
 }

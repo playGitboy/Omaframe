@@ -32,12 +32,21 @@ so **no extra codecs to install**.
 
 ### Install
 
-```bash
-# Arch / Omarchy (recommended)
-yay -S omaframe
+**Arch / Omarchy** — grab the prebuilt package from
+[Releases](https://github.com/playGitboy/Omaframe/releases) and install it:
 
-# Any distribution — one-click script
-# (detects and installs dependencies → builds → installs → self-checks)
+```bash
+# one-liner: fetch the latest release package and install it
+curl -fsSL https://github.com/playGitboy/Omaframe/releases/latest/download/omaframe.pkg.tar.zst -o /tmp/omaframe.pkg.tar.zst \
+  && sudo pacman -U /tmp/omaframe.pkg.tar.zst
+```
+
+To uninstall: `sudo pacman -Rns omaframe` (your settings in `~/.config/omarchy-omaframe/` are kept).
+
+**From source (any distribution)** — the one-click script detects and installs
+dependencies, builds, installs and self-checks:
+
+```bash
 git clone https://github.com/playGitboy/Omaframe && cd Omaframe
 scripts/install.sh
 ```

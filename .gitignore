@@ -7,3 +7,9 @@ target
 
 # 个人测试媒体（照片/视频），体积大且与程序无关，不入库
 test/
+
+# makepkg 构建产物
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig

@@ -30,11 +30,20 @@ MP4 / MOV / MKV / WebM / AVI / M4V 等 —— 视频走系统 `ffmpeg`，**无�
 
 ### 安装
 
-```bash
-# Arch / Omarchy（推荐）
-yay -S omaframe
+**Arch / Omarchy** —— 从
+[Releases](https://github.com/playGitboy/Omaframe/releases) 取预编译包，一条命令装上：
 
-# 任意发行版：一键脚本（自动判断并安装依赖 → 编译 → 安装 → 自检）
+```bash
+# 取最新 release 的包并安装
+curl -fsSL https://github.com/playGitboy/Omaframe/releases/latest/download/omaframe.pkg.tar.zst -o /tmp/omaframe.pkg.tar.zst \
+  && sudo pacman -U /tmp/omaframe.pkg.tar.zst
+```
+
+卸载：`sudo pacman -Rns omaframe`（保留 `~/.config/omarchy-omaframe/` 里的配置）。
+
+**任意发行版 · 从源码**：一键脚本自动判断并安装依赖 → 编译 → 安装 → 自检：
+
+```bash
 git clone https://github.com/playGitboy/Omaframe && cd Omaframe
 scripts/install.sh
 ```

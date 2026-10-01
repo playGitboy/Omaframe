@@ -5,6 +5,15 @@
 
 ## [0.4.4] - 2026-10-01
 
+### 打包 / 分发
+- **GitHub Release 预编译包**（`omaframe.pkg.tar.zst`，x86_64）：README 提供一条命令
+  `curl … | sudo pacman -U` 即可安装，不再依赖 AUR。
+  AUR 的 `PKGBUILD` 也保留（可从源码构建、任意架构），source 改为可直接下载的
+  GitHub tag 归档并填入真实校验和。
+- **`make install` / `scripts/install.sh` 的开机启动项改用 XDG `Hidden` 屏蔽**：
+  系统包会在 `/etc/xdg/autostart` 装一份，若关闭时删除用户项反而会让系统项生效
+  （用户关了却仍自启）；现在关闭时写 `Hidden=true` 覆盖系统项。
+
 ### 文档
 - **README 拆成中英两份**：`README.md` 改为英文（GitHub 默认展示），
   新增 `readme_zh.md` 中文版，两者互相链接。

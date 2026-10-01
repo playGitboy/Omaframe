@@ -13,26 +13,27 @@ depends=('gtk4' 'libadwaita' 'gtk4-layer-shell' 'gdk-pixbuf2' 'cairo' 'pango' 'g
 makedepends=('cargo' 'rust' 'pkgconf' 'git')
 optdepends=('ffmpeg: 视频解码（缺失时仅显示图片）'
             'imagemagick: HEIC/HEIF 相框素材回退解码')
-source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('SKIP')          # 由 scripts/check-release.sh 在发布时填入真实校验和
+# 源码来自 GitHub tag 归档（必须可直接下载，AUR/pacman 才能构建）
+source=("$pkgname-$pkgver.tar.gz::https://github.com/playGitboy/Omaframe/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('dbfba3ddcdc534c0c69fc3fbf44cba95d0cccf8d467df7875ab463566f71e1a3')   # GitHub tag v0.4.4 归档
 provides=("$pkgname")
 conflicts=()
 backup=()
 
 # 从源码目录构建（yay 会先 clone 仓库）
 build() {
-  cd "$pkgname-$pkgver"
+  cd "Omaframe-$pkgver"
   # release profile 已是 lto+strip；这里用并行构建加速
-  CARGO_TARGET_DIR="$srcdir/target" cargo build --release --locked
+  cargo build --release --locked
 }
 
 check() {
-  cd "$pkgname-$pkgver"
-  CARGO_TARGET_DIR="$srcdir/target" cargo test --release --locked
+  cd "Omaframe-$pkgver"
+  cargo test --release --locked
 }
 
 package() {
-  cd "$pkgname-$pkgver"
+  cd "Omaframe-$pkgver"
   install -Dm755 "target/release/omaframe" "$pkgdir/usr/bin/omaframe"
   # 相框库必须随包安装：程序运行时在 /usr/share/omaframe/frame 查找
   install -d "$pkgdir/usr/share/omaframe/frame"
