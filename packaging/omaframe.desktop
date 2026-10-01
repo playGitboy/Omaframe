@@ -2,7 +2,7 @@
 Type=Application
 Name=Omaframe 智能相框
 Comment=在桌面上显示本地图片/视频相框
-Exec=/home/sen/.local/bin/omaframe
+Exec=omaframe
 Icon=preferences-desktop-display
 Terminal=false
 # 桌面起来后稍等再启动：不与 Hyprland/omarchy 首屏争资源
@@ -11,4 +11,5 @@ X-GNOME-Autostart-Enabled=true
 # 不弹通知、不阻塞会话启动
 X-GNOME-Autostart-NoNotification=true
 X-StartupNotify=false
-OnlyShowIn=Hyprland;
+# 兼容性：GNOME 规范要求自定义桌面名用 X- 前缀，旧版用裸 Hyprland 会被 desktop-file-validate 判为非法
+OnlyShowIn=X-Hyprland;

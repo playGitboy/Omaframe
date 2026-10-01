@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=桌面相框
+Name[en]=Desktop Photo Frame
+GenericName=相框
+Comment=把本地图片/视频以自适应 PNG 相框摆在桌面上
+Comment[en]=Show local photos/videos on the desktop inside an adaptive PNG frame
+Exec=omaframe
+TryExec=omaframe
+Icon=omaframe
+Terminal=false
+StartupNotify=true
+Categories=Graphics;GTK;
+Keywords=photo;frame;picture;wallpaper;desktop;相框;壁纸;照片;
+X-GNOME-UsesNotifications=false

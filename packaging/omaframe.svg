@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Omaframe 图标：深板岩相框 + 浅色"照片"内区 + 小圆点缀
+     与托盘自绘图标（tray.rs::icon_pixmap）配色一致。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="4" y="8" width="56" height="48" rx="6" ry="6" fill="#2b2f3a"/>
+  <rect x="11" y="15" width="42" height="34" rx="2.5" ry="2.5" fill="#7f8a99"/>
+  <circle cx="43" cy="24" r="5" fill="#cdd4dd"/>
+  <path d="M11 45 L25 31 L34 40 L40 34 L53 45 L53 47 a2.5 2.5 0 0 1-2.5 2.5 h-37 A2.5 2.5 0 0 1 11 47 Z" fill="#4a5262"/>
+</svg>

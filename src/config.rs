@@ -233,8 +233,22 @@ pub fn frame_dir() -> PathBuf {
     if let Some(d) = exe_dir {
         candidates.push(d.join("frame"));
         candidates.push(d.join("../frame"));
+        // 安装布局 A：~/.local/bin/omaframe + ~/.local/share/omaframe/frame
+        // （make install / scripts/install.sh 的布局）
+        if let Some(up) = d.parent() {
+            candidates.push(up.join("share").join("omaframe").join("frame"));
+        }
+        // 安装布局 B（AUR/系统包）：/usr/bin/omaframe + /usr/share/omaframe/frame
+        if d == std::path::Path::new("/usr/bin") {
+            candidates.push(std::path::PathBuf::from("/usr/share/omaframe/frame"));
+        }
     }
     candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
+    // 兜底：常见安装位置（开发态 CARGO_MANIFEST_DIR 已覆盖）
+    if let Ok(d) = std::env::var("XDG_DATA_HOME") {
+        candidates.push(PathBuf::from(d).join("omaframe").join("frame"));
+    }
+    candidates.push(PathBuf::from("/usr/share/omaframe/frame"));
     for c in &candidates {
         if c.is_dir() {
             return c.clone();
