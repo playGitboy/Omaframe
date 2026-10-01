@@ -3,6 +3,25 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-10-01
+
+### 修复
+- **删除相框后设置页仍显示旧文件名**：两个根因
+  1. `frame_dir()` 候选顺序错 —— 编译期源码目录排在**安装目录之前**，
+     开发构建永远读源码、`make install` 的目录形同虚设，用户改哪边都对不上。
+     现改为「$OMA_FRAME_DIR → exe 同级 → exe 上级 → <prefix>/share/omaframe/frame
+     → /usr/share/omaframe/frame → $XDG_DATA_HOME → cargo 布局 → 源码目录（最后兜底）」。
+  2. `settings::show()` 在**面板已打开**时提前 return，把媒体/相框重扫整个跳过。
+     现把同步逻辑前移，幂等且有指纹比对兜底，不会白重载。
+
+### 新增
+- **跨发行版默认媒体目录**：`default_media_dir()` 原来只认 Omarchy 布局，
+  现按"存在即用"探测 Omarchy current → omarchy/backgrounds → XDG backgrounds →
+  hypr/backgrounds → /usr/share/backgrounds → ~/Pictures 等，
+  支持 `OMA_MEDIA_DIR` 显式覆盖；使程序在 debian/arch/ubuntu 上也能默认加载系统壁纸。
+- 设置页最下方新增**项目主页**行（可点击，用 xdg-open 打开 GitHub 仓库）。
+- Cargo.toml 补 `repository` 字段（链接取自该字段，不硬编码）。
+
 ## [0.2.3] - 2026-10-01
 
 ### 新增
@@ -81,6 +100,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.3.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.3.0
 [0.2.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.3
 [0.2.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.2
 [0.2.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.2.1

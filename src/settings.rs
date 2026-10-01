@@ -74,7 +74,19 @@ fn within_show_grace() -> bool {
 }
 
 /// 显示面板（已经开着就只把它抬到前面，不重建）
+/// 同步"用户可能在外部改过"的状态：媒体目录重扫 + 相框库索引重建。
+/// 幂等且很便宜（相框库用指纹比对，没变就跳过）。
+fn sync_external_state(state: &Rc<AppState>) {
+    if let Some(player) = state.player.borrow().clone() {
+        player.rescan();                 // 媒体目录：用户可能新加了素材
+        player.refresh_frame_index();    // 相框库：用户可能新加/删/换了相框图
+    }
+}
+
 pub fn show(state: &Rc<AppState>) {
+    // 面板已打开也要同步：否则重复点托盘图标/再次 `omaframe settings`
+    // 会走下面的 early-return，把重扫整个跳过（表现为"删了相框还在"）。
+    sync_external_state(state);
     if let Some(p) = state.settings_window.borrow().as_ref() {
         if p.is_visible() {
             p.win.present();
@@ -90,10 +102,6 @@ pub fn show(state: &Rc<AppState>) {
     // 桌面组件默认只在启动时扫一次，不重扫就看不到新文件。
     // 扫描在后台线程（rescan 是异步的），不阻塞面板显示；
     // 扫完由 after_scan() 刷新当前素材/列表。
-    if let Some(player) = state.player.borrow().clone() {
-        player.rescan();                 // 重扫媒体目录（用户可能新加了素材）
-        player.refresh_frame_index();    // 重建相框库索引（用户可能新加了相框图）
-    }
     hide(state, "重建");
     let panel = build(state);
     panel.win.present();
@@ -589,6 +597,24 @@ fn build(state: &Rc<AppState>) -> Panel {
         g_pos.add(&row);
     }
     page.add(&g_pos);
+
+    // ---------------- 项目链接 ----------------
+    // 放在设置页最下方，点击用系统默认浏览器打开项目仓库
+    {
+        let g_link = adw::PreferencesGroup::builder().build();
+        let row = adw::ActionRow::builder()
+            .title("项目主页")
+            .subtitle(env!("CARGO_PKG_REPOSITORY"))
+            .activatable(true)
+            .build();
+        let url = env!("CARGO_PKG_REPOSITORY").to_string();
+        row.add_suffix(&gtk::Image::from_icon_name("emblem-system-symbolic"));
+        row.connect_activated(move |_| {
+            crate::open_url(&url);
+        });
+        g_link.add(&row);
+        page.add(&g_link);
+    }
     let anchor = adw::ComboRow::builder()
         .title("默认位置")
         .model(&gtk::StringList::new(&[

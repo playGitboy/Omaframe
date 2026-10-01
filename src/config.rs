@@ -222,38 +222,62 @@ impl Default for FrameConfig {
     }
 }
 
-/// 内置相框库目录（程序目录下的 `frame/`）
+/// 内置相框库目录。
+///
+/// 候选顺序很关键：**运行期能确定的安装位置必须优先于编译期源码目录**。
+/// 之前源码目录（CARGO_MANIFEST_DIR/frame）排在前面，导致 `make install` 装出来的
+/// 程序在开发机上仍读源码目录 —— 用户改的是安装目录（或反之），行为对不上，
+/// 表现为"删了相框但设置页里还在"。
+///
+/// 顺序：
+///   1. `$OMA_FRAME_DIR`  —— 显式覆盖（开发/排查用）
+///   2. 可执行文件同级的 `frame/`         （便携安装）
+///   3. 可执行文件上级的 `frame/`
+///   4. `<prefix>/share/omaframe/frame`    （make install / install.sh 布局）
+///   5. `/usr/share/omaframe/frame`        （AUR/系统包布局）
+///   6. `$XDG_DATA_HOME/omaframe/frame`
+///   7. `<target>/../../frame`             （cargo build/run 的开发布局）
+///   8. 编译期源码目录                    （纯兜底）
 pub fn frame_dir() -> PathBuf {
-    // 可执行文件所在目录的 frame/（安装后为 ~/.local/bin/../frame 不成立，
-    // 因此优先用编译期源码目录，其次用可执行文件同级的 frame）
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(d) = exe_dir {
+
+    // 1) 显式覆盖（最优先，方便开发时指向别处）
+    if let Ok(d) = std::env::var("OMA_FRAME_DIR") {
+        candidates.push(PathBuf::from(expand_user(&d)));
+    }
+
+    if let Some(d) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        // 2) 3) 便携布局
         candidates.push(d.join("frame"));
         candidates.push(d.join("../frame"));
-        // 安装布局 A：~/.local/bin/omaframe + ~/.local/share/omaframe/frame
-        // （make install / scripts/install.sh 的布局）
+        // 4) <prefix>/share/omaframe/frame —— exe 在 <prefix>/bin/omaframe
         if let Some(up) = d.parent() {
             candidates.push(up.join("share").join("omaframe").join("frame"));
         }
-        // 安装布局 B（AUR/系统包）：/usr/bin/omaframe + /usr/share/omaframe/frame
-        if d == std::path::Path::new("/usr/bin") {
-            candidates.push(std::path::PathBuf::from("/usr/share/omaframe/frame"));
+        // 7) cargo 开发布局：target/release/omaframe → <repo>/frame
+        if let Some(up2) = d.parent().and_then(|p| p.parent()) {
+            candidates.push(up2.join("frame"));
         }
     }
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
-    // 兜底：常见安装位置（开发态 CARGO_MANIFEST_DIR 已覆盖）
+
+    // 5) 系统包布局
+    candidates.push(PathBuf::from("/usr/share/omaframe/frame"));
+    // 6) XDG
     if let Ok(d) = std::env::var("XDG_DATA_HOME") {
         candidates.push(PathBuf::from(d).join("omaframe").join("frame"));
     }
-    candidates.push(PathBuf::from("/usr/share/omaframe/frame"));
+    // 8) 编译期源码目录（最后兜底）
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frame"));
+
     for c in &candidates {
         if c.is_dir() {
             return c.clone();
         }
     }
+    // 全都不存在：返回第一个（源码），保证有确定行为
     candidates.remove(0)
 }
 
@@ -357,21 +381,51 @@ impl Config {
     }
 }
 
-/// 首次运行的默认媒体目录：**优先当前系统壁纸目录**（Omarchy 的 current 主题），
-/// 其次 `~/.config/omarchy/backgrounds`，最后 `~/Pictures/PhotoFrame`。
+/// 首次运行的默认媒体目录：**当前系统的壁纸目录**（跨发行版）。
+///
+/// 不能只认 Omarchy 的布局 —— 本程序也要能在 debian/arch/ubuntu 等系统上跑，
+/// 那些系统的壁纸位置完全不同。按"存在即用"顺序探测，全部落空才用 ~/Pictures/PhotoFrame。
+///
+/// 需要 `OMA_MEDIA_DIR` 可显式覆盖（自检/排查用）。
 pub fn default_media_dir() -> PathBuf {
     let home = home_dir();
-    // ① 当前系统壁纸（Omarchy 的 current 符号链接指向正在使用的主题）
-    let current_theme_bg = home.join(".local/state/omarchy/current/theme/backgrounds");
-    if current_theme_bg.is_dir() {
-        return current_theme_bg;
+    if let Ok(d) = std::env::var("OMA_MEDIA_DIR") {
+        let p = PathBuf::from(expand_user(&d));
+        if p.is_dir() {
+            return p;
+        }
     }
-    // ② Omarchy 壁纸目录
-    let omarchy_bg = home.join(".config/omarchy/backgrounds");
-    if omarchy_bg.is_dir() {
-        return omarchy_bg;
+    // ① Omarchy（current 是指向正在使用主题的符号链接）
+    let mut cands = vec![
+        home.join(".local/state/omarchy/current/theme/backgrounds"),
+        home.join(".config/omarchy/backgrounds"),
+    ];
+    // ② 常见桌面环境/发行版的壁纸目录（XDG user-xdg-graphic installed）
+    if let Ok(cfg_home) = std::env::var("XDG_CONFIG_HOME") {
+        let b = PathBuf::from(&cfg_home);
+        cands.push(b.join("backgrounds"));
+        cands.push(b.join("hypr/backgrounds"));
+    } else {
+        let b = home.join(".config");
+        cands.push(b.join("backgrounds"));
+        cands.push(b.join("hypr/backgrounds"));
     }
-    // ③ 约定目录（兜底）
+    if let Ok(d) = std::env::var("XDG_DATA_HOME") {
+        cands.push(PathBuf::from(d).join("backgrounds"));
+    } else {
+        cands.push(home.join(".local/share/backgrounds"));
+    }
+    cands.push(PathBuf::from("/usr/share/backgrounds"));
+    cands.push(PathBuf::from("/usr/share/backgrounds/omarchy"));
+    // ③ 常见图片目录（用户自己的照片）
+    for d in ["Pictures", "Pictures/Wallpapers", "图片", "Pictures/Photos"] {
+        cands.push(home.join(d));
+    }
+    for c in cands {
+        if c.is_dir() {
+            return c;
+        }
+    }
     home.join("Pictures").join("PhotoFrame")
 }
 
