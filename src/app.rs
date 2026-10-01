@@ -23,6 +23,8 @@ pub struct AppState {
     pub tray: RefCell<Option<Rc<crate::tray::Tray>>>,
     /// 配置是否刚刚被程序修改过（退出时需要再存一次）
     pub dirty: std::cell::Cell<bool>,
+    /// 本次启动做过"首次自动摆放" → 首帧就绪后按真实相框尺寸补贴靠
+    pub auto_placed: std::cell::Cell<bool>,
 }
 
 impl AppState {
@@ -66,10 +68,25 @@ impl AppState {
             );
         }
 
+        // 贴靠/夹取都基于**可见可用区**（已扣掉合成器 reserved，例如顶栏），
+        // 否则 bottom/right 方向的边距会平白少掉顶栏高度（实测：选左下角+边距30，
+        // 底部几乎贴边、左侧正常）。
+        // 注意用 config.window.monitor（此时已由上面的 monitor.connector() 填好），
+        // 不能再用 connector —— 它已被 unwrap_or(connector) 移动掉了。
+        let mon_name = config.window.monitor.clone();
+        let usable = match crate::hypr::monitor_reserved(&mon_name) {
+            Some([l, t, r, b]) => geometry::Bounds {
+                width: (bounds.width - l - r).max(1),
+                height: (bounds.height - t - b).max(1),
+            },
+            None => bounds,
+        };
+
+        let mut auto_placed_now = false;
         if !config.window.placed {
             let (x, y) = geometry::anchor_pos(
                 &config.window.default_anchor,
-                bounds,
+                usable,
                 config.window.width,
                 config.window.height,
                 config.window.margin,
@@ -77,6 +94,7 @@ impl AppState {
             config.window.x = x;
             config.window.y = y;
             config.window.placed = true;
+            auto_placed_now = true;
             needs_save = true;
         } else {
             // 显示器分辨率/布局变化后把位置夹回可见范围
@@ -85,7 +103,7 @@ impl AppState {
                 config.window.y,
                 config.window.width,
                 config.window.height,
-                bounds,
+                usable,
             );
             if (x, y) != (config.window.x, config.window.y) {
                 config.window.x = x;
@@ -121,6 +139,7 @@ impl AppState {
             settings_window: RefCell::new(None),
             tray: RefCell::new(None),
             dirty: std::cell::Cell::new(needs_save),
+            auto_placed: std::cell::Cell::new(auto_placed_now),
         });
 
         crate::info!(
@@ -295,6 +314,7 @@ pub fn run(args: &[String]) -> Result<u8, String> {
             crate::info!("相框窗口已显示");
 
             if let Some(player) = crate::player::MediaPlayer::new(app_state.clone()) {
+                player.set_autoplaced(app_state.auto_placed.get());
                 player.start();
                 player.apply_desktop_visible();
                 // 重启后自动恢复"调试浮层"开关

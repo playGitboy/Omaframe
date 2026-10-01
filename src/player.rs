@@ -26,6 +26,10 @@ pub struct MediaPlayer {
     /// `auto_style` 重入守卫 + 记忆：**每个素材只随机选一次**。
     /// 不加会死循环：apply_image → auto_pick → state.update/load_frame → 回调 →
     /// 再次 apply_image → 又随机选 → …（实测 7 秒写盘 181 次、相框疯狂跳动）。
+    /// 本次启动是"首次自动摆放"（placed=false）→ 首帧就绪后按**真实相框尺寸**
+    /// 再贴靠一次。首摆放只能用配置里的画布尺寸 window.width/height 估算，而相框
+    /// 在画布内并不占满（实测画布 384x384、相框仅 403x247）→ 底/右边距会偏大。
+    autoplaced: std::cell::Cell<bool>,
     auto_pick_guard: std::cell::Cell<bool>,
     auto_pick_memo: RefCell<Option<(usize, usize, i32, i32)>>,
     frame: RefCell<Option<Rc<crate::frame::FrameRenderer>>>,
@@ -105,6 +109,7 @@ impl MediaPlayer {
             slides,
             frame: RefCell::new(None),
             video: RefCell::new(None),
+            autoplaced: std::cell::Cell::new(false),
             auto_pick_guard: std::cell::Cell::new(false),
             auto_pick_memo: RefCell::new(None),
             current_is_video: Cell::new(false),
@@ -242,6 +247,8 @@ impl MediaPlayer {
                     window.sync_input_region();
                     return;
                 }
+                // 用户一动手就交还位置控制权：不再跟随贴靠（否则会被自动挪回去）
+                self.autoplaced.set(false);
                 if d.mode_is_resize {
                     // 预览期间 target_media_w/h 存的是**上限盒**尺寸，直接落盘
                     let (box_w, box_h) = (d.target_media_w, d.target_media_h);
@@ -461,6 +468,11 @@ impl MediaPlayer {
         // 首次拿到视频帧尺寸 → 按方向自动选默认相框（style 为空时）
         self.auto_pick_frame_style(_w, _h);
         window.view.set_video_frame(Some(tex));
+        // 首摆放按画布尺寸估算；真实相框尺寸随素材比例到达后才准 → 持续跟随贴靠，
+        // 直到用户自己拖动过（那时才交还控制权）。
+        if self.autoplaced.get() {
+            self.apply_anchor();
+        }
     }
 
     /// 当前是否在播放（图片看轮换，视频看管线状态）
@@ -851,6 +863,11 @@ impl MediaPlayer {
         self.auto_pick_frame_style(size.0, size.1);
         window.view.set_box(mw, mh);
         window.view.set_image(Some(tex), caption);
+        // 首摆放按画布尺寸估算；真实相框尺寸随素材比例到达后才准 → 持续跟随贴靠，
+        // 直到用户自己拖动过（那时才交还控制权）。
+        if self.autoplaced.get() {
+            self.apply_anchor();
+        }
         self.refresh_frame();
         self.refresh_visibility_rect();
         window.update_hud(&self.state, caption);
@@ -970,6 +987,11 @@ impl MediaPlayer {
 
     /// 把配置里的媒体内缩比例同步给绘制控件
     /// 设置变更后即时生效：尺寸上限、轮换参数、相框、视频参数
+    /// 本次启动若属"首次自动摆放"，标记一下：首帧就绪后按真实相框尺寸补贴靠。
+    pub fn set_autoplaced(self: &Rc<Self>, v: bool) {
+        self.autoplaced.set(v);
+    }
+
     pub fn apply_settings(self: &Rc<Self>) {
         let (slides_enabled, interval, random, fps, muted, max_w, max_h) = {
             let cfg = self.state.config.borrow();

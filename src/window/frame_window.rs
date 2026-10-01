@@ -257,15 +257,29 @@ impl FrameWindow {
         }
     }
 
-    /// 当前屏幕可用区域（逻辑像素）
+    /// 当前屏幕**可见可用区**（逻辑像素）
+    ///
+    /// 不能直接用整屏：相框是 layer surface（锚定四边），Hyprland 会把它放在
+    /// 顶栏**下方**（实测 surface xywh = `0 26 1600 900`，屏幕高 900）。
+    /// 若按整屏高贴靠，bottom/right 方向的边距会平白少掉一个顶栏高度 ——
+    /// 表现为“选左下角+边距30，底部几乎贴边、左侧却看着正常”。
+    /// 这里扣掉合成器真实的 reserved 区（取不到则退化为整屏，行为不变）。
     pub fn screen_bounds(&self, state: &AppState) -> crate::geometry::Bounds {
         let connector = state.config.borrow().window.monitor.clone();
-        target_monitor(&connector)
+        let base = target_monitor(&connector)
             .as_ref()
             .map(monitor_bounds)
             .unwrap_or(crate::geometry::Bounds {
                 width: 1920,
                 height: 1080,
-            })
+            });
+        match crate::hypr::monitor_reserved(&connector) {
+            // reserved = [left, top, right, bottom]（逻辑像素）
+            Some([l, t, r, b]) => crate::geometry::Bounds {
+                width: (base.width - l - r).max(1),
+                height: (base.height - t - b).max(1),
+            },
+            None => base,
+        }
     }
 }

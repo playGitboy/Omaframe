@@ -314,3 +314,28 @@ fn query_windows() -> Option<(WinList, String)> {
     }
     Some((list, active_name))
 }
+
+/// 读取某显示器被**保留**（reserved）的边距 `[left, top, right, bottom]`（逻辑像素）。
+///
+/// 用途：相框是 layer surface（锚定四边），Hyprland 会把它放在**顶栏下方**
+/// （实测 surface xywh = `0 26 1600 900`，而屏幕高 900 —— 底部多出 26px 不可见）。
+/// 若按「整屏高」贴靠，bottom/right 方向的边距就会比设置值小这么多。
+/// 这里取合成器真实的保留区，让贴靠基于**可见可用区**。
+/// 非 Hyprland / 取不到 → 返回 None（调用方按整屏处理，行为不变）。
+pub fn monitor_reserved(connector: &str) -> Option<[i32; 4]> {
+    let out = std::process::Command::new("hyprctl")
+        .args(["-j", "monitors"])
+        .output()
+        .ok()?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let arr = v.as_array()?;
+    let m = arr.iter().find(|m| {
+        m.get("name").and_then(|n| n.as_str()).unwrap_or("") == connector
+    })?;
+    let r = m.get("reserved")?.as_array()?;
+    let mut out = [0i32; 4];
+    for (i, x) in r.iter().take(4).enumerate() {
+        out[i] = x.as_i64().unwrap_or(0) as i32;
+    }
+    Some(out)
+}
