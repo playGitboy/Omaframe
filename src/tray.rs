@@ -24,66 +24,84 @@ pub struct Tray {
 /// 优先用传入的名字；找不到就按候选列表挑第一个真实存在的，最后退回原名。
 fn resolve_icon_name(preferred: &str) -> String {
     const CANDIDATES: [&str; 6] = [
-        "emblem-photos-symbolic",   // breeze / breeze-dark
-        "filter-photos-symbolic",   // Yaru
-        "image-x-generic-symbolic", // Adwaita
-        "multimedia-photos-symbolic",
+        "emblem-photos-symbolic",   // 首选
+        "image-x-generic-symbolic",
         "folder-pictures-symbolic",
-        "image-missing-symbolic",
+        "multimedia-photos-symbolic",
+        "image-missing-symbolic",   // 兜底，总该有
+        "user-desktop-symbolic",
     ];
     use std::path::{Path, PathBuf};
-    let home = std::env::var("HOME").unwrap_or_default();
-    // 图标搜索根目录
-    let mut roots: Vec<PathBuf> = Vec::new();
-    for base in [
-        std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| format!("{home}/.local/share")),
-        "/usr/share".to_string(),
-        "/usr/local/share".to_string(),
-    ] {
-        roots.push(PathBuf::from(&base).join("icons"));
-    }
-    // omarchy 当前主题自带的图标
-    roots.push(PathBuf::from(&home).join(".local/share/omarchy/current/theme/icons"));
 
-    // 当前图标主题 + 它的 Inherits 链（宿主只按这条链找图标）
+    // 图标搜索根目录（与 GTK/Quickshell 查找路径一致）
+    let home = std::env::var("HOME").unwrap_or_default();
+    let roots: Vec<PathBuf> = vec![
+        PathBuf::from(std::env::var("XDG_DATA_HOME").unwrap_or(format!("{home}/.local/share")))
+            .join("icons"),
+        PathBuf::from("/usr/share/icons"),
+        PathBuf::from("/usr/local/share/icons"),
+        PathBuf::from(&home).join(".local/share/omarchy/current/theme/icons"),
+    ];
+
+    // 活动图标主题 + 其 Inherits 继承链（宿主也只按这条链找）
     let mut chain: Vec<String> = Vec::new();
-    if let Some(t) = run_gsettings_icon_theme() {
+    if let Some(t) = current_icon_theme() {
         let mut cur = t;
         for _ in 0..8 {
-            if chain.contains(&cur) {
+            if chain.iter().any(|c| *c == cur) {
                 break;
             }
             chain.push(cur.clone());
-            cur = inherit_of(&roots, &cur).unwrap_or_default();
+            cur = roots
+                .iter()
+                .find_map(|r| {
+                    let p = r.join(&cur).join("index.theme");
+                    let txt = std::fs::read_to_string(p).ok()?;
+                    txt.lines().find_map(|l| {
+                        l.trim()
+                            .strip_prefix("Inherits=")
+                            .map(|v| v.split(',').next().unwrap_or("").trim().trim_matches('\'').to_string())
+                            .filter(|v| !v.is_empty())
+                    })
+                })
+                .unwrap_or_default();
             if cur.is_empty() {
                 break;
             }
         }
     }
-    let exists_in = |name: &str| -> bool {
-        let hit = |dir: &Path| {
-            dir.join(format!("{name}.svg")).is_file()
-                || dir.join(format!("{name}.png")).is_file()
-        };
-        // 只在**活动主题链**与 omarchy 主题目录里找：
-        // 别的主题（breeze 等）里有不算数 —— 宿主渲染时同样找不到。
-        chain.iter().any(|t| roots.iter().any(|r| hit(&r.join(t))))
-            || roots.last().is_some_and(|r| hit(r))
+
+    let exists = |name: &str| -> bool {
+        let direct = |d: &Path| d.join(format!("{name}.svg")).is_file() || d.join(format!("{name}.png")).is_file();
+        chain.iter().any(|t| {
+            roots.iter().any(|r| {
+                let base = r.join(t);
+                direct(&base) || hicolor_like(&base).iter().any(|d| direct(d))
+            })
+        }) || roots.last().is_some_and(|r| direct(r))
     };
 
-    if exists_in(preferred) {
+    if exists(preferred) {
         return preferred.to_string();
     }
     for c in CANDIDATES {
-        if exists_in(c) {
-            crate::info!("托盘图标 {preferred} 不在活动图标主题（{chain:?}），改用 {c}");
+        if exists(c) {
+            crate::info!("托盘图标 {preferred} 不在活动图标主题，改用 {c}");
             return c.to_string();
         }
     }
     preferred.to_string()
 }
 
-fn run_gsettings_icon_theme() -> Option<String> {
+/// 图标主题里常见的两级子目录（scalable/emblems、scalable/status…）
+fn hicolor_like(base: &std::path::Path) -> Vec<std::path::PathBuf> {
+    ["scalable/emblems", "scalable/status", "scalable/places", "emblems", "places", "status", "scalable"]
+        .iter()
+        .map(|s| base.join(s))
+        .collect()
+}
+
+fn current_icon_theme() -> Option<String> {
     let out = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "icon-theme"])
         .output()
@@ -96,24 +114,6 @@ fn run_gsettings_icon_theme() -> Option<String> {
     }
 }
 
-/// 读 <root>/<theme>/index.theme 的 Inherits=（主题继承链）
-fn inherit_of(roots: &[std::path::PathBuf], theme: &str) -> Option<String> {
-    for r in roots {
-        let p = r.join(theme).join("index.theme");
-        if let Ok(txt) = std::fs::read_to_string(&p) {
-            for line in txt.lines() {
-                let line = line.trim();
-                if let Some(v) = line.strip_prefix("Inherits=") {
-                    let v = v.split(',').next().unwrap_or("").trim().trim_matches('\'');
-                    if !v.is_empty() {
-                        return Some(v.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
 
 impl Tray {
     /// 注册托盘图标；宿主不支持时返回 None
