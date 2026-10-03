@@ -354,10 +354,11 @@ fn icon_pixmap_variant() -> glib::Variant {
     //   "expected a(iiay) got (iiay)"  → 该项被判无效。
     // glib 需要能静态推断元素类型，(i,i,Vec<u8>) 的 StaticVariantType 恰好是 (iiay)，
     // 所以直接用它作为数组元素类型即可。
-    let entry: glib::Variant = glib::Variant::from((S, S, data));
-    // SNI 的 IconPixmap 必须是 **a(iiay)**（一个元素的数组），quickshell 会严格校验：
-    //   "expected a(iiay) got (iiay)" → 直接把该项判为无效。
-    // glib 的 array_from_iter(_with_type) 会额外断言子节点类型，这里用最朴素的
-    // 方式：把单元素 Vec 变成 Variant（tuple 有静态类型 → 数组类型自然是 a(iiay)）。
-    glib::Variant::from(vec![entry])
+    // 必须是 **a(iiay)**：元素是 (宽, 高, ARGB像素) 这个**元组**类型。
+    // 之前写成 `Variant::from(vec![entry])`（entry 是 Variant）→ 数组类型成了 **av**，
+    // 宿主按 a(iiay) 解不出来 → 静默忽略 IconPixmap；又因 IconName 在当前主题
+    // 解析不到 → **整个图标不渲染**（表现就是"重启后状态栏图标消失"）。
+    // 用带静态类型的 Vec<(i32,i32,Vec<u8>)> 才能得到真正的 a(iiay)。
+    let arr: Vec<(i32, i32, Vec<u8>)> = vec![(S, S, data)];
+    glib::Variant::from(arr)
 }
