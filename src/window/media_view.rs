@@ -31,6 +31,27 @@ const MASK_INSET: f64 = 0.0;
 /// 桌面就会沿开口边缘透出一条 1px 亮线（"十字细线"）。让媒体多探入几像素、
 /// 由相框斜边盖住即可；值过大会让照片钻到框体上，所以取保守的 3px。
 const MEDIA_EDGE_BLEED: f64 = 3.0;
+
+/// 转场动画状态
+pub struct TransAnim {
+    /// 本次效果 key（阶段 A 只实现 fade，后续扩展用）
+    #[allow(dead_code)]
+    kind: String,
+    start: std::time::Instant,
+    duration: std::time::Duration,
+}
+
+impl TransAnim {
+    /// 0.0 → 1.0（ease-out，尾段更柔和）
+    fn progress(&self) -> f64 {
+        let d = self.duration.as_secs_f64().max(0.001);
+        let t = ((self.start.elapsed().as_secs_f64()) / d).clamp(0.0, 1.0);
+        1.0 - (1.0 - t).powi(3)
+    }
+    fn done(&self) -> bool {
+        self.start.elapsed() >= self.duration
+    }
+}
 /// 媒体绘制区域相对中心片（CENTER）内缩的像素数。
 ///
 /// **保持 0**（媒体正好铺满中心片）。两个必须同时成立的条件：
@@ -73,7 +94,17 @@ mod imp {
         pub controls: Controls,
         pub caption: RefCell<String>,
         pub logged: Cell<bool>,
-        /// 几何调试日志去重键（frame+media 尺寸变了才记一条）
+        /// 转场：上一张纹理（动画期间与当前纹理同时绘制）
+    pub prev_tex: RefCell<Option<gdk::Texture>>,
+    /// 转场动画状态（None = 不在转场）
+    pub anim: RefCell<Option<TransAnim>>,
+    /// 转场 tick 代号：每次新动画 +1，旧 tick 回调发现代号变了就自行退出
+    pub anim_gen: std::cell::Cell<u64>,
+    /// 是否允许转场（被覆盖/隐藏时置 false，直接跳到终态，不浪费 tick）。
+    /// **默认 true** —— 早期版本默认 false，而它只在覆盖状态"变化"时才被
+    /// set_transition_allowed(true) 置位，初始若没有状态变化就永远不开 → 转场不生效。
+    pub trans_allowed: std::cell::Cell<bool>,
+    /// 几何调试日志去重键（frame+media 尺寸变了才记一条）
         pub geo_logged: Cell<u64>,
         /// 缩放预览：目标**上限盒**尺寸（0,0 = 不覆盖；缩放拖动时先预览盒）
         pub preview_box_w: Cell<i32>,
@@ -159,6 +190,28 @@ mod imp {
                 snapshot.save();
                 let clip = media_rect;
                 snapshot.push_clip(&clip);
+                // 转场期间同时画"上一张"与"当前张"；无转场时退化为原来的一次绘制。
+                // 开销全部在合成器侧（push_opacity + 两张已有 GPU 纹理），
+                // **不做任何 CPU 像素运算**。
+                let anim_prog: Option<f64> =
+                    self.anim.borrow().as_ref().map(|a| a.progress());
+                if let Some(prev) = self.prev_tex.borrow().clone() {
+                    if let Some(p) = anim_prog {
+                        let a = (1.0 - p) as f32;
+                        if a > 0.004 {
+                            let g = MEDIA_EDGE_BLEED as f32;
+                            let bleed = gtk::graphene::Rect::new(
+                                media_rect.x() - g,
+                                media_rect.y() - g,
+                                media_rect.width() + g * 2.0,
+                                media_rect.height() + g * 2.0,
+                            );
+                            snapshot.push_opacity(a as f64);
+                            snapshot.append_texture(&prev, &bleed);
+                            snapshot.pop();
+                        }
+                    }
+                }
                 if let Some(tex) = self.texture.borrow().clone() {
                     // 绘制到比 clip 再大 MEDIA_EDGE_BLEED 的范围（clip 会裁掉多余的）：
                     // 纹理被缩放到 bleed 矩形，clip 边界离纹理自身边缘还有 2px，
@@ -601,6 +654,9 @@ impl MediaView {
         let view: Self = glib::Object::builder().build();
         view.imp().media_zoom.set(1.0);
         view.imp().frame_grow.set(0.05); // 相框默认比素材大 5%
+        // 转场默认**允许**；只有被覆盖/隐藏时才由 set_transition_allowed(false) 关掉。
+        // 默认 false 会导致：初始若没有覆盖状态"变化"事件，就永远不被置位 → 转场全程不生效。
+        view.imp().trans_allowed.set(true);
         view.add_css_class("omaframe-view");
         // 控制层淡入淡出必须自己请求重绘：GTK 不会因为 Cell 变化就重画。
         // 少了这一句，动画只在"别的重绘顺便带上"时才可见，
@@ -903,8 +959,41 @@ impl MediaView {
 
     /// 媒体内缩比例（0.96 = 四周留 4% 余量）
     pub fn set_image(&self, texture: Option<gdk::Texture>, caption: &str) {
+        self.set_image_transitioned(texture, caption, None);
+    }
+
+    /// 设置媒体，并可指定本次切换使用的转场。
+    /// `tr = None` 表示不转场（视频切换 / 被覆盖 / 配置关闭时走这里）。
+    ///
+    /// 转场只在**切换瞬间**播放：计时由本视图自己驱动，
+    /// **不影响自动轮换的间隔**（轮换计时器在别处，不因动画重启）。
+    pub fn set_image_transitioned(
+        &self,
+        texture: Option<gdk::Texture>,
+        caption: &str,
+        tr: Option<(&str, u32)>,
+    ) {
+        let imp = self.imp();
+        let can = tr.is_some() && imp.trans_allowed.get() && imp.anim.borrow().is_none();
+        if can {
+            let cur = imp.texture.borrow().clone();
+            if let (Some(cur), Some(_new)) = (cur, texture.clone()) {
+                let (kind, ms) = tr.unwrap();
+                *imp.prev_tex.borrow_mut() = Some(cur);
+                *imp.anim.borrow_mut() = Some(TransAnim {
+                    kind: kind.to_string(),
+                    start: std::time::Instant::now(),
+                    duration: std::time::Duration::from_millis(ms.max(1) as u64),
+                });
+                imp.anim_gen.set(imp.anim_gen.get().wrapping_add(1));
+                self.start_anim_tick();
+            } else {
+                // 首张 / 没有上一张：没有可淡出的对象，直接显示
+                *imp.prev_tex.borrow_mut() = None;
+                *imp.anim.borrow_mut() = None;
+            }
+        }
         {
-            let imp = self.imp();
             *imp.texture.borrow_mut() = texture;
             *imp.caption.borrow_mut() = caption.to_string();
             imp.logged.set(false);
@@ -912,7 +1001,58 @@ impl MediaView {
         self.queue_draw();
     }
 
+    /// 16ms tick 驱动动画（与 controls.rs 同一范式）。
+    /// 用代号（gen）识别过期回调，避免叠加多个 tick；WeakRef 避免延长 widget 生命周期。
+    fn start_anim_tick(&self) {
+        let weak = glib::WeakRef::new();
+        weak.set(Some(self));
+        let gen = self.imp().anim_gen.get();
+        glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+            let Some(v) = weak.upgrade() else {
+                return glib::ControlFlow::Break; // widget 已销毁
+            };
+            let imp = v.imp();
+            if imp.anim_gen.get() != gen {
+                return glib::ControlFlow::Break; // 被更新的动画接管
+            }
+            let running = match imp.anim.borrow().as_ref() {
+                Some(a) if imp.trans_allowed.get() && !a.done() => true,
+                _ => false,
+            };
+            if !running {
+                // 结束 / 被覆盖 / 无动画：清干净并停止 tick
+                imp.anim_gen.set(imp.anim_gen.get().wrapping_add(1));
+                *imp.anim.borrow_mut() = None;
+                *imp.prev_tex.borrow_mut() = None;
+                v.queue_draw();
+                return glib::ControlFlow::Break;
+            }
+            v.queue_draw();
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// 立即结束转场（保留当前纹理，丢弃上一张）
+    pub fn settle_transition(&self) {
+        let imp = self.imp();
+        imp.anim_gen.set(imp.anim_gen.get().wrapping_add(1));
+        *imp.anim.borrow_mut() = None;
+        *imp.prev_tex.borrow_mut() = None;
+    }
+
+    /// 是否允许转场。被覆盖 / 隐藏时置 false（省电，且不会"切回来正在转场"）
+    pub fn set_transition_allowed(&self, ok: bool) {
+        let imp = self.imp();
+        imp.trans_allowed.set(ok);
+        if !ok {
+            self.settle_transition();
+            self.queue_draw();
+        }
+    }
+
     pub fn set_video_frame(&self, texture: Option<gdk::Texture>) {
+        // 视频走自己的帧管线，**不做转场**（视频自身已有淡入淡出，叠加会脏）
+        self.settle_transition();
         *self.imp().texture.borrow_mut() = texture;
         self.queue_draw();
     }

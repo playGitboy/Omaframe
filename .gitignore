@@ -9,7 +9,9 @@ target
 test/
 
 # makepkg 构建产物
-src/
-pkg/
+# 注意：**不要写 `src/`** —— 那是本项目的源码目录，会把 src/*.rs 一起忽略掉，
+# 导致源码改动被静默排除在 git add/commit 之外（踩过）。
+# makepkg 只在临时目录里跑（/tmp/pkgbuild*），不会污染仓库根目录。
+/pkg/
 *.pkg.tar.zst
 *.pkg.tar.zst.sig

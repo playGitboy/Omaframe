@@ -31,6 +31,8 @@ pub struct MediaPlayer {
     /// 在画布内并不占满（实测画布 384x384、相框仅 403x247）→ 底/右边距会偏大。
     autoplaced: std::cell::Cell<bool>,
     auto_pick_guard: std::cell::Cell<bool>,
+    /// 是否已经显示过至少一张（首帧不做转场）
+    shown_once: std::cell::Cell<bool>,
     auto_pick_memo: RefCell<Option<(usize, usize, i32, i32)>>,
     frame: RefCell<Option<Rc<crate::frame::FrameRenderer>>>,
     /// 视频播放器（无 GStreamer/无解码器时为 None → 跳过视频）
@@ -111,6 +113,7 @@ impl MediaPlayer {
             video: RefCell::new(None),
             autoplaced: std::cell::Cell::new(false),
             auto_pick_guard: std::cell::Cell::new(false),
+            shown_once: std::cell::Cell::new(false),
             auto_pick_memo: RefCell::new(None),
             current_is_video: Cell::new(false),
             drag: RefCell::new(DragState::default()),
@@ -862,7 +865,10 @@ impl MediaPlayer {
         // 首次拿到素材尺寸 → 按方向自动选默认相框（style 为空时）
         self.auto_pick_frame_style(size.0, size.1);
         window.view.set_box(mw, mh);
-        window.view.set_image(Some(tex), caption);
+        // 转场：仅图片切换、且不在首帧 / 不被覆盖时启用；**不影响轮换间隔**
+        // （轮换计时器在 slides 里，转场只是切换瞬间的一次性动画）。
+        let tr = self.transition_for_apply();
+        window.view.set_image_transitioned(Some(tex), caption, tr.as_ref().map(|(k, d)| (k.as_str(), *d)));
         // 首摆放按画布尺寸估算；真实相框尺寸随素材比例到达后才准 → 持续跟随贴靠，
         // 直到用户自己拖动过（那时才交还控制权）。
         if self.autoplaced.get() {
@@ -871,6 +877,40 @@ impl MediaPlayer {
         self.refresh_frame();
         self.refresh_visibility_rect();
         window.update_hud(&self.state, caption);
+    }
+
+    /// 本次图片切换该用的转场（None = 不转场）
+    fn transition_for_apply(self: &Rc<Self>) -> Option<(String, u32)> {
+        // 首帧没有"上一张"，无从淡出
+        // 首帧没有"上一张"，无从淡出
+        if !self.shown_once.replace(true) {
+            return None;
+        }
+        let (en, random, effect, dur) = {
+            let cfg = self.state.config.borrow();
+            (
+                cfg.transition.enabled,
+                cfg.transition.random,
+                cfg.transition.effect.clone(),
+                cfg.transition.duration_ms,
+            )
+        };
+        if !en || dur == 0 {
+            return None;
+        }
+        let mut kind = effect;
+        if random {
+            use rand::seq::IndexedRandom;
+            let pool: Vec<&str> = crate::config::TRANSITION_EFFECTS.iter().map(|(k, _)| *k).collect();
+            // 避免随机到和当前相同的效果，否则看起来像"没转场"
+            let cur = self.state.config.borrow().transition.effect.clone();
+            let cand: Vec<&str> = pool.iter().copied().filter(|k| *k != cur).collect();
+            let pick = cand.choose(&mut rand::rng()).copied().or_else(|| pool.choose(&mut rand::rng()).copied());
+            if let Some(p) = pick {
+                kind = p.to_string();
+            }
+        }
+        Some((kind, dur))
     }
 
     fn prefetch(self: &Rc<Self>) {
@@ -930,6 +970,10 @@ impl MediaPlayer {
     /// 被窗口覆盖 / 恢复：图片停轮换、视频暂停管线（省 CPU）
     pub fn set_active(self: &Rc<Self>, active: bool) {
         self.slides.set_active(active);
+        // 被覆盖/隐藏：直接结束转场并停掉 tick（省电；恢复时不会"正在转场"）
+        if let Some(w) = self.state.window() {
+            w.view.set_transition_allowed(active);
+        }
         if !active {
             if let Some(v) = self.video.borrow().as_ref() {
                 if v.is_playing() {

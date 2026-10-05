@@ -139,9 +139,16 @@ install -Dm755 "$ROOT/target/release/omaframe" "$BINDIR/omaframe"
 install -d "$FRAMEDIR"
 rm -f "$FRAMEDIR"/*.png
 install -Dm644 "$ROOT"/frame/*.png "$FRAMEDIR"/ 2>/dev/null
-[ -d "$HOME/.config/autostart" ] && install -Dm644 "$ROOT/packaging/omaframe.desktop" "$AUTOSTART/omaframe.desktop"
+# autostart / 菜单入口：二进制在 $BINDIR，而 systemd 的 xdg-autostart 生成器
+# 只在**系统 PATH** 里解析 Exec，不搜 ~/.local/bin → Exec=omaframe 会被判
+# "Exec binary does not exist" 而静默丢弃整个单元。本地安装必须写绝对路径。
+install -d "$AUTOSTART" "$APPDIR"
+if [ -d "$AUTOSTART" ]; then
+  sed "s|^Exec=omaframe\$|Exec=$BINDIR/omaframe|" "$ROOT/packaging/omaframe.desktop" > "$AUTOSTART/omaframe.desktop"
+fi
 # 系统菜单入口：autostart 项不会出现在应用菜单里，必须另装 applications/ 项
-install -Dm644 "$ROOT/packaging/omaframe-app.desktop" "$APPDIR/omaframe.desktop"
+sed "s|^Exec=omaframe\$|Exec=$BINDIR/omaframe|" "$ROOT/packaging/omaframe-app.desktop" > "$APPDIR/omaframe.desktop"
+chmod 644 "$APPDIR/omaframe.desktop" 2>/dev/null || true
 install -Dm644 "$ROOT/packaging/omaframe.svg" "$ICONDIR/hicolor/scalable/apps/omaframe.svg"
 
 ok "程序      $BINDIR/omaframe"

@@ -26,14 +26,21 @@ run: build
 ## 安装：只写用户目录，不需要 root，不改 hypr/omarchy 配置
 install: build
 	install -Dm755 target/release/$(PKG) $(BINDIR)/$(PKG)
-	install -Dm644 packaging/omaframe.desktop $(AUTOSTART_DIR)/$(PKG).desktop
+	@# autostart / 菜单入口：二进制装在 $(BINDIR)，但 systemd 的
+	@# xdg-autostart 生成器只在**系统 PATH** 里解析 Exec，不搜 ~/.local/bin →
+	@# Exec=omaframe 会被判"Exec binary does not exist"而静默丢弃整个单元。
+	@# 本地安装必须写绝对路径（系统包仍用 packaging 里的裸名，见 PKGBUILD）。
+	install -d $(AUTOSTART_DIR) $(APPDIR)
+	sed 's|^Exec=omaframe$$|Exec=$(BINDIR)/$(PKG)|' packaging/omaframe.desktop \
+		> $(AUTOSTART_DIR)/$(PKG).desktop
+	sed 's|^Exec=omaframe$$|Exec=$(BINDIR)/$(PKG)|' packaging/omaframe-app.desktop \
+		> $(APPDIR)/$(PKG).desktop
+	chmod 644 $(AUTOSTART_DIR)/$(PKG).desktop $(APPDIR)/$(PKG).desktop
 	@# 相框库必须一起装：frame_dir() 按 exe 同级/上级/编译期路径找 frame/，
 	@# 换台机器三处都不存在 → 用户看到"相框库为空"。
 	install -d $(DATADIR)/frame
 	rm -f $(DATADIR)/frame/*.png          # 先清空，保证与源码目录一致
 	install -Dm644 frame/*.png $(DATADIR)/frame/
-	@# 系统菜单入口：autostart 项**不会**出现在应用菜单里，必须另装 applications/ 项
-	install -Dm644 packaging/omaframe-app.desktop $(APPDIR)/$(PKG).desktop
 	install -Dm644 packaging/omaframe.svg $(ICONDIR)/hicolor/scalable/apps/$(PKG).svg
 	@echo "已安装："
 	@echo "  程序      $(BINDIR)/$(PKG)"

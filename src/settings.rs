@@ -670,6 +670,30 @@ fn build(state: &Rc<AppState>) -> Panel {
         g_link.add(&row);
         page.add(&g_link);
     }
+
+    // ---------------- 退出 ----------------
+    // 放在设置页最下方：破坏性操作放最后、最不显眼，避免误点。
+    // 用 ActionRow + Button（不用 adw::ButtonRow，那个要 libadwaita 1.5 特性，
+    // 会把构建门槛从 1.4 抬到 1.5）。
+    {
+        let g_quit = adw::PreferencesGroup::builder().build();
+        let row = adw::ActionRow::builder()
+            .title("退出")
+            .subtitle("关闭桌面相框（当前配置会先保存）")
+            .build();
+        let btn = gtk::Button::with_label("退出");
+        btn.add_css_class("destructive-action");
+        // 整行可点（等价于点按钮）
+        row.set_activatable_widget(Some(&btn));
+        row.add_suffix(&btn);
+        let st = state.clone();
+        btn.connect_clicked(move |_| {
+            crate::info!("设置页点击「退出」");
+            quit(&st);
+        });
+        g_quit.add(&row);
+        page.add(&g_quit);
+    }
     let anchor = adw::ComboRow::builder()
         .title("默认位置")
         .model(&gtk::StringList::new(&[

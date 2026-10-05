@@ -17,6 +17,25 @@ pub struct Tray {
     on_toggle: Rc<dyn Fn()>,
     /// 导出的对象注册 id（必须在对象存活期间保留）
     _reg: RefCell<Option<gio::RegistrationId>>,
+    /// `StatusNotifierHostRegistered` 信号订阅（drop 即退订，必须保留）
+    _host_signal: RefCell<Option<gio::SignalSubscription>>,
+}
+
+/// 向当前 SNI watcher 注册本项。可重复调用（watcher 按名字去重）。
+fn register_item(conn: &gio::DBusConnection, service: &str) -> Result<(), glib::Error> {
+    conn.call_sync(
+        Some("org.kde.StatusNotifierWatcher"),
+        "/StatusNotifierWatcher",
+        "org.kde.StatusNotifierWatcher",
+        "RegisterStatusNotifierItem",
+        // parameters 必须是"参数元组"，传裸字符串会变成畸形消息
+        Some(&glib::Variant::tuple_from_iter([glib::Variant::from(service)])),
+        None,
+        gio::DBusCallFlags::NONE,
+        -1,
+        gio::Cancellable::NONE,
+    )
+    .map(|_| ())
 }
 
 /// 图标名解析：宿主（SNI）拿到 `IconName` 后要在**当前图标主题**里找得到图形，
@@ -129,6 +148,7 @@ impl Tray {
         let this = Rc::new(Tray {
             on_toggle: Rc::new(on_toggle),
             _reg: RefCell::new(None),
+            _host_signal: RefCell::new(None),
         });
 
         // gio 0.22 的 DBusInterfaceInfo 没有 builder，用 XML 描述最直接
@@ -141,7 +161,7 @@ impl Tray {
     <property name="Id" type="s" access="read"/>
     <property name="Title" type="s" access="read"/>
     <property name="IconName" type="s" access="read"/>
-    <property name="IconPixmap" type="(iiay)" access="read"/>
+    <property name="IconPixmap" type="a(iiay)" access="read"/>
     <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
     <property name="ItemIsMenu" type="b" access="read"/>
   </interface>
@@ -251,46 +271,82 @@ impl Tray {
         };
         crate::debug!("已持有 bus 名字 {uniq}: {named}");
         // 拿到唯一名就用名字注册（quickshell 等宿主只认能对应上的名字）
-        let service = if named { uniq.as_str() } else { OBJECT_PATH };
-
-        // 向托盘宿主注册。宿主（quickshell）对"刚启动就注册"的项可能来不及握手，
-        // 因此延迟一小会儿并重试。
-        let conn2 = conn.clone();
-        let service = service.to_string();
-        let register = move |conn: &gio::DBusConnection, service: &str| -> Result<(), glib::Error> {
-            conn.call_sync(
-                Some("org.kde.StatusNotifierWatcher"),
-                "/StatusNotifierWatcher",
-                "org.kde.StatusNotifierWatcher",
-                "RegisterStatusNotifierItem",
-                // parameters 必须是"参数元组"，传裸字符串会变成畸形消息
-                Some(&glib::Variant::tuple_from_iter([glib::Variant::from(service)])),
-                None,
-                gio::DBusCallFlags::NONE,
-                -1,
-                gio::Cancellable::NONE,
-            )
-            .map(|_| ())
+        let service: String = if named {
+            uniq.clone()
+        } else {
+            OBJECT_PATH.to_string()
         };
-        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-            match register(&conn2, &service) {
-                Ok(()) => {
-                    crate::info!("托盘图标已注册（左键切换设置窗口）");
-                }
+
+        // 向托盘宿主注册。
+        //
+        // **注册不会随进程存活而自动保持**：watcher（宿主）自己重启/重载时
+        // （quickshell reload、omarchy 更新、shell 崩溃），新 watcher 的
+        // RegisteredStatusNotifierItems 是空的，而本进程若只在启动时注册过一次
+        // → 状态栏图标永久消失。实测：omaftrame 08:55 启动、quickshell 09:11
+        // 重启后，watcher 列表里只剩比它更晚重新注册的其它应用。
+        //
+        // 因此不能"启动时注册一次就完事"：要监听 watcher 名字的出现
+        // （`org.kde.StatusNotifierWatcher`）随时补注册，并在宿主注册信号
+        // `StatusNotifierHostRegistered` 时再补一次（SNI 规范建议）。
+        let conn2 = conn.clone();
+        let service2 = service.clone();
+        let do_register: Rc<dyn Fn(bool)> = Rc::new(move |retry: bool| {
+            match register_item(&conn2, &service2) {
+                Ok(()) => crate::info!("托盘图标已注册（左键切换设置窗口）"),
                 Err(e) => {
-                    crate::warn!("托盘注册失败，700ms 后重试：{e}");
-                    let conn3 = conn2.clone();
-                    let svc = service.clone();
-                    glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(700),
-                        move || match register(&conn3, &svc) {
-                            Ok(()) => crate::info!("托盘图标已注册（左键切换设置窗口）"),
-                            Err(e) => crate::warn!("托盘注册仍失败：{e}"),
-                        },
-                    );
+                    crate::warn!("托盘注册失败：{e}");
+                    if retry {
+                        let conn3 = conn2.clone();
+                        let svc = service2.clone();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(700),
+                            move || match register_item(&conn3, &svc) {
+                                Ok(()) => crate::info!("托盘图标已注册（左键切换设置窗口）"),
+                                Err(e) => crate::warn!("托盘注册仍失败：{e}"),
+                            },
+                        );
+                    }
                 }
             }
         });
+
+        // watcher 名字出现（首次启动或重启后）→ 注册；名字消失时只记日志。
+        // `g_bus_watch_name` 的 watch 不随返回 id 销毁而解除（要显式 `bus_unwatch_name`），
+        // 所以这里丢弃 id 也不会让监听失效；进程存活期间一直有效。
+        let _watcher_id = {
+            let do_register = do_register.clone();
+            gio::bus_watch_name_on_connection(
+                &conn,
+                "org.kde.StatusNotifierWatcher",
+                gio::BusNameWatcherFlags::NONE,
+                move |_conn: gio::DBusConnection, _name: &str, _owner: &str| {
+                    crate::debug!("SNI watcher 出现，注册/补注册托盘项");
+                    (do_register)(true);
+                },
+                move |_conn: gio::DBusConnection, _name: &str| {
+                    crate::debug!("SNI watcher 消失，等待其重新出现后自动补注册");
+                },
+            )
+        };
+
+        // 宿主（tray host）注册信号 → 再补一次；watcher 会去重，无副作用。
+        let host_signal = conn.subscribe_to_signal(
+            Some("org.kde.StatusNotifierWatcher"),
+            Some("org.kde.StatusNotifierWatcher"),
+            Some("StatusNotifierHostRegistered"),
+            Some("/StatusNotifierWatcher"),
+            None,
+            gio::DBusSignalFlags::NONE,
+            {
+                let do_register = do_register.clone();
+                move |_sig| {
+                    crate::debug!("SNI 宿主已注册，补注册托盘项");
+                    (do_register)(true);
+                }
+            },
+        );
+
+        *this._host_signal.borrow_mut() = Some(host_signal);
         Some(this)
     }
 }

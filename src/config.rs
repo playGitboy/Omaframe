@@ -63,6 +63,8 @@ pub fn expand_user(p: &str) -> PathBuf {
 pub struct Config {
     /// 开机启动（XDG autostart 项）。**默认开启**；设置页可关。
     pub autostart: bool,
+    /// 素材切换转场
+    pub transition: TransitionConfig,
     pub source: SourceConfig,
     pub display: DisplayConfig,
     pub slideshow: SlideshowConfig,
@@ -143,6 +145,43 @@ pub struct FrameConfig {
     pub fit: String,
     /// 旧字段（v1 早期）：PNG 绝对路径，仅用于自动迁移到 `style`
     pub path: String,
+}
+
+/// 可选转场效果（key → 界面名）。
+/// 实现约束：只用 snapshot 的 translate/scale/push_opacity/push_clip，
+/// **不做 CPU 像素运算、不建 ImageSurface、不用 filter** —— 保证开销在 GPU 侧。
+pub const TRANSITION_EFFECTS: [(&str, &str); 6] = [
+    ("fade", "淡入淡出"),
+    ("ken_burns", "缓慢推近"),
+    ("pull_back", "拉远"),
+    ("slide", "横向滑动"),
+    ("roll", "垂直卷帘"),
+    ("page_flip", "翻页"),
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransitionConfig {
+    /// 转场总开关
+    pub enabled: bool,
+    /// 效果 key（见 TRANSITION_EFFECTS）；random 开启时由程序覆盖
+    pub effect: String,
+    /// 随机转场：每次切换从已有效果里随机挑一个（开启时设置页的效果下拉置灰）
+    pub random: bool,
+    /// 单次转场时长（毫秒）。**不叠加到自动轮换间隔上**：
+    /// 转场只在切换瞬间播放，轮换计时器按原计划走。
+    pub duration_ms: u32,
+}
+
+impl Default for TransitionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            effect: "fade".to_string(),
+            random: false,
+            duration_ms: 600,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -377,6 +416,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             autostart: true,
+            transition: Default::default(),
             source: Default::default(),
             display: Default::default(),
             slideshow: Default::default(),
@@ -406,6 +446,17 @@ impl Config {
             self.video.mode = "complete".into();
         }
         self.video.max_fps = self.video.max_fps.clamp(1, 60);
+
+        // 转场：时长夹到合理区间；效果名非法则回落 fade（配置被手改也不炸）
+        let t = &mut self.transition;
+        t.duration_ms = t.duration_ms.clamp(200, 5_000);
+        if !TRANSITION_EFFECTS.iter().any(|(k, _)| *k == t.effect) {
+            t.effect = "fade".into();
+        }
+        // 随机转场开启时不保留固定效果（设置页也会把下拉置灰，这里保证语义干净）
+        if t.random {
+            t.effect = "fade".into();
+        }
 
         let w = &mut self.window;
         w.width = w.width.clamp(MIN_WIDTH, MAX_DIM);
