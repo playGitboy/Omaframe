@@ -178,7 +178,7 @@ impl Default for TransitionConfig {
             enabled: true,
             effect: "fade".to_string(),
             random: false,
-            duration_ms: 600,
+            duration_ms: 1000,
         }
     }
 }

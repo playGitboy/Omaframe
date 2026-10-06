@@ -343,6 +343,11 @@ mod imp {
                             snapshot.translate(&gtk::graphene::Point::new(-ax as f32, -ay as f32));
                         }
                         snapshot.append_texture(&prev, &prev_bleed);
+                        // **必须 pop**：GTK4 里 save/restore 与 push_*/pop 是两套独立的栈。
+                        // 少了这一句，未闭合的 opacity 组会把**之后画的遮罩与相框**一起吞进去
+                        // 并乘上 prev_a（1→0）→ 相框在转场期间消失/闪屏，且新图也被压到透明、
+                        // 要等动画结束才"瞬间弹出"（用户报的两个现象其实是同一个 bug）。
+                        snapshot.pop();
                         snapshot.restore();
                     }
                 }

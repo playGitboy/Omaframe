@@ -3,6 +3,26 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.3] - 2026-10-02
+
+### 修复（一个 bug 同时造成两个现象：相框闪屏 + 新图"瞬间弹出"）
+- **`push_opacity` 没有配对的 `pop()`**（转场里绘制"上一张"的分支）：
+  GTK4 的 `save()/restore()` 与 `push_*/pop()` 是**两套独立的栈**，
+  漏掉 `pop()` 会让这个未闭合的组把**之后画的遮罩与相框**一起吞进去、
+  并乘上 `prev_a`（1→0）。后果：
+  1. **相框在转场期间消失/闪屏**（即便固定在同一个相框上也一样）；
+  2. 新底图同样被压到透明 → 全程看不见，等动画结束组关闭才**瞬间弹出** ——
+     用户描述的"旧底图切出后新底图直接加载、过渡生硬"。
+  修法：补上 `snapshot.pop()`。现已逐块核对「媒体 / 旧图 / 新图」三处栈操作**全部平衡**。
+
+### 调整
+- 转场默认时长 **600ms → 1000ms**（更从容，符合"回忆相册"的节奏）。
+
+### 验证
+- 41/41 测试、0 编译警告、发布自检通过。
+- 栈平衡无法用单测覆盖（需要真实 widget 与 GtkSnapshot），已在代码里写明
+  「两套栈」的注释 + 逐块人工核对，防止再次漏 pop。
+
 ## [0.5.2] - 2026-10-02
 
 ### 修复（转场观感：过渡生硬 / 中间闪一下）
@@ -262,6 +282,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.5.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.3
 [0.5.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.2
 [0.5.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.1
 [0.5.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.0
