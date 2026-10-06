@@ -80,21 +80,49 @@ struct TransFrame {
     push: bool,
 }
 
-/// 由波前半径反推进度（= r / max_r），用于让波纹环的亮度随扩散衰减。
-/// 直接由几何量推出，绘制处就不需要再依赖动画进度变量。
-fn p_ripple(rf: RippleGeo, reach: f64) -> f64 {
-    (rf.r / (reach * 1.04)).clamp(0.0, 1.0)
-}
-
-/// 涟漪波前几何：`r` 是**像素半径**（到圆心的距离），`cx/cy` 是圆心在内孔里的比例位置。
-/// 半径在 `TransAnim::frame()` 里按 `sqrt((mw/2)^2+(mh/2)^2)` 归一化，
-/// 保证 p=1 时波前一定盖满整个内孔（否则四角会残留旧图）。
+/// 涟漪波前几何。
 #[derive(Debug, Clone, Copy)]
 struct RippleGeo {
+    /// 缓动后的进度 0..1（环的相位与衰减都由它推）
+    p: f64,
+    /// 主波前半径（像素）= `p * max_r`；圆形揭示用它
     r: f64,
+    /// 环的**行程上限**（像素）。刻意大于"圆心到四角"的距离：
+    /// 这样揭示在中段就完成，**后面的时间留给涟漪继续向外扩散** ——
+    /// 否则揭示一结束涟漪就消失了，观感上"没有涟漪"。
+    max_r: f64,
+    /// 圆心（内孔比例 0..1）
     cx: f64,
     cy: f64,
 }
+
+/// 涟漪的环：`(相位延迟, 线宽, 亮度)`。
+/// **相位必须错开**：每圈在不同时刻离开落点，才会同时看到"多圈在不同半径上"；
+/// 若都挂在同一半径上（比如 ×1.0 / ×0.94 / ×0.88），看起来只是一条粗环。
+const RIPPLE_RINGS: [(f64, f64, f64); 4] = [
+    (0.00, 2.6, 0.80), // 主波前：最亮最粗
+    (0.11, 2.0, 0.52),
+    (0.22, 1.5, 0.32),
+    (0.33, 1.1, 0.18), // 最外侧余波：最淡
+];
+
+/// 由波前几何算出当前要画的环：`(半径像素, 不透明度, 线宽)`。
+/// 每条环以**恒定波速**扩散、相位相互错开 → 看起来是"一圈圈荡开"。
+/// 整体再乘 `(1-p)` 收尾淡出，保证动画结束时不留任何环。
+/// 抽成纯函数是为了能被单测覆盖（绘制代码本身单测不到）。
+fn ripple_rings(rf: &RippleGeo) -> Vec<(f64, f64, f64)> {
+    let fade = (1.0 - rf.p).max(0.0);
+    RIPPLE_RINGS
+        .iter()
+        .filter_map(|&(delay, w, bright)| {
+            let t = (rf.p - delay).max(0.0);
+            let r = t * rf.max_r;
+            let a = (1.0 - t).powf(1.3) * bright * fade;
+            (r >= 1.0 && a >= 0.01).then_some((r, a, w))
+        })
+        .collect()
+}
+
 
 /// 转场动画状态
 pub struct TransAnim {
@@ -116,6 +144,24 @@ impl TransAnim {
     }
 
     /// 按效果算出本帧参数。`mw/mh` = 媒体矩形尺寸（逻辑像素）。
+    /// 涟漪几何：由进度直接算出波前与圆心的**纯函数**。
+    /// 抽出来是为了让单测能直接构造任意进度 —— `at_progress()` 依赖时钟，
+    /// 进程被调度延迟几十毫秒就会算出偏差很大的进度（踩过：p=0.75 实测 0.984），
+    /// 拿它断言中段数值必然 flaky。
+    fn ripple_geo(p: f64, mw: f64, mh: f64, cx: f64, cy: f64) -> RippleGeo {
+        let reach = ((mw * 0.5).powi(2) + (mh * 0.5).powi(2)).sqrt();
+        // 行程比"盖满四角"再远 45%：揭示约在 69% 进度处完成，
+        // 余下 31% 让涟漪继续向外荡开（否则揭示一结束就再看不到涟漪）。
+        let max_r = reach * 1.45;
+        RippleGeo {
+            p,
+            r: p * max_r,
+            max_r,
+            cx,
+            cy,
+        }
+    }
+
     fn frame(&self, mw: f64, mh: f64) -> TransFrame {
         let p = self.progress();
         let mut f = TransFrame {
@@ -158,12 +204,7 @@ impl TransAnim {
             // 全程只有纹理 + 快照变换 + cairo 描边：**渲染器无关、无 CPU 像素运算**。
             Effect::Ripple => {
                 // 波前半径：p=1 时略大于"圆心到四角"的距离，保证彻底盖满（不残留旧图）
-                let max_r = ((mw * 0.5).powi(2) + (mh * 0.5).powi(2)).sqrt() * 1.04;
-                f.ripple = Some(RippleGeo {
-                    r: p * max_r,
-                    cx: 0.5,
-                    cy: 0.5,
-                });
+                f.ripple = Some(TransAnim::ripple_geo(p, mw, mh, 0.5, 0.5));
                 // 旧图不动、不透明：被扩散的波前逐层盖住（涟漪"漫过"照片的感觉）
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
@@ -461,24 +502,15 @@ mod imp {
                 // 画在**媒体裁剪之内** → 只在照片区域内出现，绝不会盖到相框上。
                 // 用 cairo 描边（不是新的纹理节点），开销可忽略。
                 if let Some(rf) = tframe.as_ref().and_then(|t| t.ripple) {
-                    let (mwf, mhf) = (media_rect.width() as f64, media_rect.height() as f64);
-                    let reach = ((mwf * 0.5).powi(2) + (mhf * 0.5).powi(2)).sqrt();
-                    // 波前盖满之后环也就没意义了（且此时 p≈1，本就该看不见）
-                    if rf.r > 1.0 && rf.r <= reach {
+                    let rings = ripple_rings(&rf);
+                    if !rings.is_empty() {
+                        let (mwf, mhf) = (media_rect.width() as f64, media_rect.height() as f64);
                         let cr = snapshot.append_cairo(&frame_rect);
                         cr.translate(media_rect.x() as f64, media_rect.y() as f64);
                         let (cx, cy) = (rf.cx * mwf, rf.cy * mhf);
-                        // 落水瞬间最亮，随扩散渐隐（0.8 次幂：比线性稍慢一点，尾韵更足）
-                        let a = (1.0 - p_ripple(rf, reach)).clamp(0.0, 1.0);
-                        // (半径系数, 线宽, 亮度系数) —— 波前本身最亮，内侧两条是余波
-                        let rings = [(1.0, 2.2, 0.60), (0.94, 1.6, 0.34), (0.88, 1.1, 0.20)];
-                        for (k, w, bright) in rings {
-                            let r = rf.r * k;
-                            if r < 0.5 {
-                                continue;
-                            }
+                        for (r, a, w) in rings {
                             cr.set_line_width(w);
-                            cr.set_source_rgba(1.0, 1.0, 1.0, a * bright);
+                            cr.set_source_rgba(1.0, 1.0, 1.0, a);
                             cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
                             let _ = cr.stroke();
                         }
@@ -1468,31 +1500,73 @@ mod trans_tests {
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
     }
 
-    /// **涟漪回归**：波前必须单调扩散，且 p=1 时半径**盖满内孔四角**
-    /// （否则四角残留旧图），同时非涟漪效果不得带波前几何。
+    /// **涟漪回归（多圈）**：相位错开 → 中段必须**同时看到多圈在不同半径上**且
+    /// 间距明显（否则看起来只是一条粗环 —— 用户报过"只有一个圆环、没有涟漪"）；
+    /// 每圈随进度外扩、越外侧越淡；动画结束时**不留任何环**。
+    /// 全部用**纯几何**构造进度，不依赖时钟（见 `ripple_geo` 的注释）。
     #[test]
-    fn ripple_sweeps_the_whole_hole_and_is_monotonic() {
+    fn ripple_rings_spread_apart_and_vanish() {
+        let (mw, mh): (f64, f64) = (400.0, 300.0);
+        let geo = |p: f64| TransAnim::ripple_geo(p, mw, mh, 0.5, 0.5);
+
+        let rings = ripple_rings(&geo(0.6));
+        assert!(
+            rings.len() >= 3,
+            "中段应同时看到多圈涟漪，实际只有 {} 圈",
+            rings.len()
+        );
+        for w in rings.windows(2) {
+            assert!(
+                w[0].0 - w[1].0 > 8.0,
+                "相邻涟漪必须明显分开，否则看起来只是一个粗环：{} vs {}",
+                w[0].0,
+                w[1].0
+            );
+            // 列表按"由外到内"排：波前最亮，越靠内的余波越淡
+            assert!(w[0].1 > w[1].1, "内侧余波应更淡：{} vs {}", w[0].1, w[1].1);
+        }
+
+        // 主波前单调外扩（p→1 时整体淡出，环会被过滤掉，所以只查到 0.8）
+        assert!(ripple_rings(&geo(0.0)).is_empty(), "落水前不该有环（半径还是 0）");
+        let mut prev = 0.0;
+        for i in 1..=8 {
+            let rings_i = ripple_rings(&geo(i as f64 / 10.0));
+            assert!(!rings_i.is_empty(), "p={} 时涟漪不该提前消失", i as f64 / 10.0);
+            let r0 = rings_i.first().map(|r| r.0).unwrap_or(0.0);
+            assert!(r0 >= prev, "主波前必须单调外扩：{prev} → {r0}");
+            prev = r0;
+        }
+        // 收尾必须干净：p=1 不留任何环（否则转场结束会看到残留圆环）
+        assert!(ripple_rings(&geo(1.0)).is_empty(), "动画结束不应残留涟漪环");
+    }
+
+    /// **涟漪回归（覆盖）**：揭示半径在 p=1 时必须**盖满内孔四角**
+    /// （否则四角残留旧图）；同时只有 Ripple 带波前几何、两图全程不透明。
+    #[test]
+    fn ripple_reveal_covers_hole_and_is_wired() {
         let (mw, mh): (f64, f64) = (400.0, 300.0);
         let reach = ((mw * 0.5).powi(2) + (mh * 0.5).powi(2)).sqrt();
-        let mut last = -1.0;
-        for i in 0..=10 {
-            let f = at_progress(Effect::Ripple, i as f64 / 10.0).frame(mw, mh);
-            let rf = f.ripple.expect("涟漪效果必须给出波前几何");
-            assert!(rf.r > last, "波前半径必须单调扩散：{last} → {}", rf.r);
-            last = rf.r;
-            // 两张图全程不透明（靠波前遮盖，不是靠淡出）
-            assert!((f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9);
-            assert!(!f.push, "涟漪不是推动类");
-        }
         assert!(
-            last >= reach,
-            "p=1 时波前半径 {last} 必须 ≥ 到四角的距离 {reach}"
+            TransAnim::ripple_geo(1.0, mw, mh, 0.5, 0.5).r >= reach,
+            "p=1 时揭示半径必须 ≥ 到四角的距离（否则四角残留旧图）"
         );
-        for k in [Effect::Fade, Effect::Slide, Effect::Roll, Effect::KenBurns, Effect::PullBack] {
-            assert!(
-                anim(k).frame(mw, mh).ripple.is_none(),
-                "{k:?} 不应带波前几何"
-            );
+        // 接线：frame() 里用同一套几何（p≈0 的端点，不受调度延迟影响）
+        let f0 = anim(Effect::Ripple).frame(mw, mh);
+        let g0 = f0.ripple.expect("涟漪效果必须给出波前几何");
+        assert!(g0.r < 1.0, "刚起步时波前应还很小");
+        assert!(
+            (f0.prev_a - 1.0).abs() < 1e-9 && (f0.cur_a - 1.0).abs() < 1e-9,
+            "涟漪靠波前遮盖，两张图全程不透明（不是靠淡出）"
+        );
+        assert!(!f0.push, "涟漪不是推动类");
+        for k in [
+            Effect::Fade,
+            Effect::Slide,
+            Effect::Roll,
+            Effect::KenBurns,
+            Effect::PullBack,
+        ] {
+            assert!(anim(k).frame(mw, mh).ripple.is_none(), "{k:?} 不应带波前几何");
         }
     }
 

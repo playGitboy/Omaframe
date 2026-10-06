@@ -3,6 +3,32 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.1] - 2026-10-06
+
+### 修复：「水滴涟漪」只看到一个圆环，没有涟漪
+0.6.0 把 3 条环**全挂在同一个半径上**（×1.0 / ×0.94 / ×0.88，间距只有 6%），
+看起来就是"一条粗环"。真正的涟漪必须是**相位错开**的：
+
+- 每圈以**恒定波速**扩散、在不同时刻离开落点
+  （相位延迟 0 / 0.11 / 0.22 / 0.33），所以任意时刻**同时有 3~4 圈在不同半径上**；
+- 环行程上限提到"圆心到四角距离 × 1.45"→ 揭示约在 **69% 进度**处完成，
+  剩下 31% 的时间留给涟漪继续向外荡开（原来一到 100% 环就停了，
+  观感上"揭示完就没涟漪了"）；
+- 亮度/线宽拉开层次：主波前 0.80/2.6px → 外侧余波 0.18/1.1px；
+- 整体再乘 `(1-p)` 收尾，保证动画结束**不留残留圆环**。
+
+### 测试
+新增两个回归（并把 `RippleGeo` 抽成纯函数 `TransAnim::ripple_geo` 以便断言中段数值）：
+- `ripple_rings_spread_apart_and_vanish`：中段必须**同时 ≥3 圈且相邻间距 > 8px**
+  （否则就是"一条粗环"）、越内侧越淡、主波前单调外扩、p=1 不留环；
+- `ripple_reveal_covers_hole_and_is_wired`：p=1 揭示半径盖满四角、只有 Ripple 带波前几何。
+
+**顺带修掉一个测试自身的问题**：原来的 `at_progress()` 助手依赖时钟，
+进程被调度延迟几十毫秒就会算出偏差很大的进度（实测想取 p=0.75、实际得到 0.984），
+拿它断言中段数值必然 flaky。现在中段断言一律走**纯几何**，只保留 p≈0/p=1 端点用时钟。
+
+43/43 测试连跑 4 次稳定、0 编译警告。
+
 ## [0.6.0] - 2026-10-06
 
 ### 新增：「水滴涟漪」转场效果
@@ -356,6 +382,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.6.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.1
 [0.6.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.0
 [0.5.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.5
 [0.5.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.4
