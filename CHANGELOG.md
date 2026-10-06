@@ -3,6 +3,27 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.5] - 2026-10-06
+
+### 修复
+- **`slide` / `roll` 之前被"矩形不同就退化为淡入淡出"的规则吞掉了**（0.5.3 引入的
+  过度防御）：素材比例不一致 → 两帧矩形不同 → 每次都被退化 → 用户看到"横向滑动 /
+  垂直卷帘无法生效"。现在推动类不再依赖"两帧矩形相同"：**两张图都先 cover 铺满当前
+  内孔再整体平移**（按需裁掉外溢、不拉伸变形），因此任意进度下都严丝合缝。
+  新增回归单测：逐帧断言旧图右缘 == 新图左缘（横向）、新图下缘 == 旧图上缘（纵向）。
+- **转场缓动改成 smoothstep**：原来的 ease-out(t³) 起步猛、收尾拖，推动类尤其"生硬"。
+- **控件命中检测与绘制不再用两套坐标**：命中路径原来做 `(mx - fx as i32)` 截断，
+  与绘制侧的整数几何不是同一套，1.6x 缩放下按钮可能"看得到点不到"。现在全程 f64。
+- **托盘图标不再 `expect()` panic**：cairo 创建失败只 `warn!` 并退回 `IconName`
+  （它只是装饰，不该让整个程序挂掉）。
+- `settle_transition()` / 首帧分支一并清掉 `prev_rect`，避免"动画没了却还记得旧几何"。
+
+### 文档
+- `docs/KEY-FINDINGS.md` 新增「全面审查：同类逻辑/代码错误的排查清单」：
+  GtkSnapshot 同一栈配对规则、几何随内容变化、浮点取整与单套坐标、装饰代码禁 expect、
+  新增配置字段必须 serde 默认值，以及**已确认无问题的项**（RefCell 借用、定时器泄漏、
+  配置 match 兜底）。
+
 ## [0.5.4] - 2026-10-06
 
 ### 开发流程修复（这一轮"改了没用"的真正原因）
@@ -301,6 +322,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.5.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.5
 [0.5.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.4
 [0.5.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.3
 [0.5.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.2

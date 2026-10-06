@@ -63,15 +63,18 @@ struct TransFrame {
     /// 旧图/新图平移（逻辑像素）
     prev_t: (f64, f64),
     cur_t: (f64, f64),
-    /// 旧图/新图缩放（x,y 分开：翻页需要只压 x）
+    /// 旧图/新图缩放（x,y 分开，便于单独缩放某一轴）
     prev_s: (f64, f64),
     cur_s: (f64, f64),
     /// 缩放锚点（媒体矩形的比例位置；0,0 = 左上，0.5,0.5 = 中心）
-    /// 翻页要挂在**左边缘**压缩才像掀页
     prev_anchor: (f64, f64),
     cur_anchor: (f64, f64),
     /// 新图的揭示裁剪（相对媒体矩形的比例 x,y,w,h）；None = 不裁
     cur_clip: Option<(f64, f64, f64, f64)>,
+    /// 推动类（slide/roll）：两张图都先**铺满当前内孔**再整体平移。
+    /// 相框尺寸随素材比例变化 → 两帧矩形通常不同；若各按自己矩形推，
+    /// 必然"缝对不齐 + 盖不满内孔"（中间透出桌面）。铺满同一块内孔则永远严丝合缝。
+    push: bool,
 }
 
 /// 转场动画状态
@@ -94,10 +97,7 @@ impl TransAnim {
     }
 
     /// 按效果算出本帧参数。`mw/mh` = 媒体矩形尺寸（逻辑像素）。
-    /// `same_rect`：上一张与当前张的绘制矩形是否完全一致。
-    /// 不一致时（相框尺寸随素材比例变化）推动类效果会出现"推入缝对不齐"，
-    /// 因此**自动退化为淡入淡出**，观感自然。
-    fn frame(&self, mw: f64, mh: f64, same_rect: bool) -> TransFrame {
+    fn frame(&self, mw: f64, mh: f64) -> TransFrame {
         let p = self.progress();
         let mut f = TransFrame {
             prev_a: 1.0 - p,
@@ -109,6 +109,7 @@ impl TransAnim {
             prev_anchor: (0.5, 0.5),
             cur_anchor: (0.5, 0.5),
             cur_clip: None,
+            push: false,
         };
         match self.kind {
             // 纯淡入淡出：最贴合"回忆"的克制感，也最省
@@ -124,21 +125,21 @@ impl TransAnim {
                 f.cur_s = (1.10 - 0.10 * p, 1.10 - 0.10 * p);
             }
             // 横向推动：旧图左退、新图右入（整屏推，无空隙）
-            Effect::Slide if same_rect => {
+            Effect::Slide => {
+                f.push = true;
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
                 f.cur_t = ((1.0 - p) * mw, 0.0);
                 f.prev_t = (-p * mw, 0.0);
             }
             // 垂直卷帘：新图自上而下揭开，旧图下移
-            Effect::Roll if same_rect => {
+            Effect::Roll => {
+                f.push = true;
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
                 f.cur_t = (0.0, -(1.0 - p) * mh);
                 f.prev_t = (0.0, p * mh);
             }
-            // 尺寸变化时推动类不适用 → 落回淡入淡出（上面的 match 已退化）
-            Effect::Slide | Effect::Roll => {}
         }
         f
     }
@@ -293,40 +294,42 @@ mod imp {
                     media_rect.width() + g * 2.0,
                     media_rect.height() + g * 2.0,
                 );
-                // 上一张与当前张的矩形是否一致（不一致 → 推动类退化）
                 let prev_rect_now = self.prev_rect.borrow().clone();
-                let same_rect = prev_rect_now.is_some_and(|(x, y, w, h)| {
-                    (x, y, w, h)
-                        == (
-                            media_rect.x() as i32,
-                            media_rect.y() as i32,
-                            media_rect.width() as i32,
-                            media_rect.height() as i32,
-                        )
-                });
                 let tframe = self.anim.borrow().as_ref().map(|a| {
-                    a.frame(
-                        media_rect.width() as f64,
-                        media_rect.height() as f64,
-                        same_rect,
-                    )
+                    a.frame(media_rect.width() as f64, media_rect.height() as f64)
                 });
                 if let (Some(tf), Some(prev)) = (tframe.as_ref(), self.prev_tex.borrow().clone()) {
                     if tf.prev_a > 0.004 {
                         // 上一张按**它自己的矩形**绘制（不是新矩形）：相框尺寸会随素材比例变，
                         // 用新矩形画旧图会尺寸不匹配、盖不满内孔 → 中间透出桌面 = "闪一下"。
-                        let (px, py, pw, ph) = prev_rect_now.unwrap_or((
-                            media_rect.x() as i32,
-                            media_rect.y() as i32,
-                            media_rect.width() as i32,
-                            media_rect.height() as i32,
-                        ));
-                        let prev_bleed = gtk::graphene::Rect::new(
-                            px as f32 - g,
-                            py as f32 - g,
-                            pw as f32 + g * 2.0,
-                            ph as f32 + g * 2.0,
-                        );
+                        // 推动类：把旧图 **cover 铺满当前内孔**（按需裁掉外溢，不拉伸变形），
+                        // 这样两张图铺在同一块矩形上做整体平移 → 任何时刻都严丝合缝。
+                        // 其余效果：按旧图**当时自己的矩形**画（换素材时相框尺寸会变，
+                        // 用新矩形画旧图会盖不满内孔 → 中间透出桌面）。
+                        let prev_bleed = if tf.push {
+                            let (tx, ty) = (prev.width() as f64, prev.height() as f64);
+                            let sc = (media_rect.width() as f64 / tx)
+                                .max(media_rect.height() as f64 / ty);
+                            let (dw, dh) = (tx * sc, ty * sc);
+                            let (dx, dy) = (
+                                media_rect.x() as f64 + (media_rect.width() as f64 - dw) / 2.0,
+                                media_rect.y() as f64 + (media_rect.height() as f64 - dh) / 2.0,
+                            );
+                            gtk::graphene::Rect::new(dx as f32, dy as f32, dw as f32, dh as f32)
+                        } else {
+                            let (px, py, pw, ph) = prev_rect_now.unwrap_or((
+                                media_rect.x() as i32,
+                                media_rect.y() as i32,
+                                media_rect.width() as i32,
+                                media_rect.height() as i32,
+                            ));
+                            gtk::graphene::Rect::new(
+                                px as f32 - g,
+                                py as f32 - g,
+                                pw as f32 + g * 2.0,
+                                ph as f32 + g * 2.0,
+                            )
+                        };
                         snapshot.save();
                         snapshot.push_opacity(tf.prev_a);
                         if (tf.prev_t.0, tf.prev_t.1) != (0.0, 0.0) {
@@ -937,11 +940,15 @@ impl MediaView {
             }
             let (fx, fy, fw, fh) = v.hit_rect_now();
             let (mx, my, mw, mh) = imp.media_rect.get();
+            // **全程用 f64 算**：hit_rect 是浮点（含拖动偏移，且显示器常有 1.6x 缩放），
+            // 先 `as i32` 截断会让按钮命中区与**画出来的**按钮差最多 1px。
+            // 绘制侧（snapshot）用的是整数几何，这里必须保持同一套坐标，
+            // 否则会出现"看得到却点不到 / 点得到却没按钮"。
             let layout = ControlLayout::with_media(
-                fw as i32,
-                fh as i32,
-                (mx - fx as i32) as f64,
-                (my - fy as i32) as f64,
+                fw.round() as i32,
+                fh.round() as i32,
+                mx as f64 - fx,
+                my as f64 - fy,
                 mw as f64,
                 mh as f64,
             );
@@ -961,11 +968,12 @@ impl MediaView {
     fn update_zone(&self, x: f64, y: f64) {
         let (fx, fy, fw, fh) = self.hit_rect_now();
         let (mx, my, mw, mh) = self.imp().media_rect.get();
+        // 与点击路径同一套 f64 坐标（见 on-click 处的说明）
         let layout = ControlLayout::with_media(
-            fw as i32,
-            fh as i32,
-            (mx - fx as i32) as f64,
-            (my - fy as i32) as f64,
+            fw.round() as i32,
+            fh.round() as i32,
+            mx as f64 - fx,
+            my as f64 - fy,
             mw as f64,
             mh as f64,
         );
@@ -1160,6 +1168,7 @@ impl MediaView {
                 // 首张 / 没有上一张：没有可淡出的对象，直接显示
                 *imp.prev_tex.borrow_mut() = None;
                 *imp.anim.borrow_mut() = None;
+                *imp.prev_rect.borrow_mut() = None;
             }
         }
         {
@@ -1208,6 +1217,9 @@ impl MediaView {
         imp.anim_gen.set(imp.anim_gen.get().wrapping_add(1));
         *imp.anim.borrow_mut() = None;
         *imp.prev_tex.borrow_mut() = None;
+        // 旧矩形一并清掉：留着不致命（有 prev_tex 时才读它），但状态残留会让
+        // "动画没了却还记得旧几何"这种不一致在下一次改动里变成真 bug。
+        *imp.prev_rect.borrow_mut() = None;
     }
 
     /// 是否允许转场。被覆盖 / 隐藏时置 false（省电，且不会"切回来正在转场"）
@@ -1311,6 +1323,15 @@ mod trans_tests {
         }
     }
 
+    /// 精确构造"进度 = p"的动画（用于逐帧断言无缝衔接）
+    fn at_progress(kind: Effect, p: f64) -> TransAnim {
+        TransAnim {
+            kind,
+            start: std::time::Instant::now() - std::time::Duration::from_secs_f64(p * 0.6),
+            duration: std::time::Duration::from_millis(600),
+        }
+    }
+
     /// 效果参数在 p=0/p=1 两端必须落在预期位置，且全程无 NaN、不越界。
     #[test]
     fn effect_frames_are_sane() {
@@ -1325,7 +1346,7 @@ mod trans_tests {
             let a = anim(k);
             // progress 是时间函数，这里直接验证 frame() 在两个端点的形状：
             // 用 mock 不了时间，所以只做"形状/范围"校验
-            let f = a.frame(mw, mh, true);
+            let f = a.frame(mw, mh);
             let nums = [
                 f.prev_a, f.cur_a, f.prev_t.0, f.prev_t.1, f.cur_t.0, f.cur_t.1,
                 f.prev_s.0, f.prev_s.1, f.cur_s.0, f.cur_s.1,
@@ -1366,25 +1387,43 @@ mod trans_tests {
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
     }
 
-    /// **关键回归**：相框尺寸会随素材比例变化，两帧矩形通常不同。
-    /// 此时推动类（slide/roll）必须**自动退化为淡入淡出** —— 否则"推入缝"对不齐，
-    /// 且旧图在新矩形里盖不满内孔 → 中间透出桌面（用户报的"移出后闪一下"）。
+    /// **关键回归**：相框尺寸随素材比例变化 → 两帧矩形通常不同。
+    /// 推动类必须**不依赖两帧矩形相同**也能无缝：两张图都 cover 铺满当前内孔
+    /// （`push == true`，绘制侧负责 cover 裁切），平移量按**内孔尺寸**算，
+    /// 因此任意 p 下旧图右边缘恰好等于新图左边缘（横向）/ 下边缘等于上边缘（纵向）。
     #[test]
-    fn push_effects_fall_back_when_rect_changes() {
+    fn push_effects_are_seamless_regardless_of_rect_change() {
         let (mw, mh) = (400.0, 300.0);
         for k in [Effect::Slide, Effect::Roll] {
-            let f = anim(k).frame(mw, mh, false); // 两帧矩形不同
+            let f = anim(k).frame(mw, mh);
+            assert!(f.push, "{k:?} 应为推动类（绘制侧会 cover 铺满内孔）");
             assert!(
-                (f.prev_a + f.cur_a - 1.0).abs() < 1e-9,
-                "{k:?} 矩形不同时应退化为淡入淡出（不透明度互补）"
+                (f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9,
+                "{k:?} 推动类全程两者都不透明（靠铺满+平移衔接，不能靠淡出）"
             );
-            assert_eq!(f.cur_t, (0.0, 0.0), "{k:?} 退化后不应有位移");
-            assert_eq!(f.prev_t, (0.0, 0.0), "{k:?} 退化后不应有位移");
         }
-        // 矩形一致时仍应是推动（有位移、不透明度为 1）
-        for k in [Effect::Slide, Effect::Roll] {
-            let f = anim(k).frame(mw, mh, true);
-            assert!((f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9);
+        // 逐帧验证"无缝"：任意 p 下两张图必须刚好拼满内孔
+        for p in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let f = at_progress(Effect::Slide, p).frame(mw, mh);
+            let prev_right = f.prev_t.0 + mw; // 旧图铺满内孔宽 mw
+            assert!(
+                (prev_right - f.cur_t.0).abs() < 1e-9,
+                "横向推动在 p={p} 有缝：旧图右缘 {prev_right} ≠ 新图左缘 {}",
+                f.cur_t.0
+            );
+            assert!(
+                f.prev_t.0 <= 1e-9 && f.cur_t.0 >= -1e-9,
+                "横向推动在 p={p} 露出左/右空隙（旧图 {} / 新图 {}）",
+                f.prev_t.0,
+                f.cur_t.0
+            );
+            let f = at_progress(Effect::Roll, p).frame(mw, mh);
+            let cur_bottom = f.cur_t.1 + mh;
+            assert!(
+                (cur_bottom - f.prev_t.1).abs() < 1e-9,
+                "垂直卷帘在 p={p} 有缝：新图下缘 {cur_bottom} ≠ 旧图上缘 {}",
+                f.prev_t.1
+            );
         }
     }
 
@@ -1394,7 +1433,7 @@ mod trans_tests {
     fn effect_slide_and_roll_push_full_width() {
         let (mw, mh) = (400.0, 300.0);
         for k in [Effect::Slide, Effect::Roll] {
-            let f = anim(k).frame(mw, mh, true);
+            let f = anim(k).frame(mw, mh);
             assert!((f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9);
             // 横向效果：位移在 x 轴上；纵向效果：位移在 y 轴上（另一个为 0）
             if k == Effect::Slide {

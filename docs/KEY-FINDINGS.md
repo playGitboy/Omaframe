@@ -809,3 +809,64 @@ crate::controls::paint(&cr, &layout_ctl, &self.controls);
 注意：**手动从终端跑 `omaframe`（不经 systemd）不带这个变量**，会回落到
 `/usr/share/omaframe/frame`（打包时的快照）。确认当前用哪个：看日志里
 `相框 /…/xxx.png` 的路径，或 `tr '\0' '\n' < /proc/<pid>/environ | grep OMA_FRAME_DIR`。
+
+---
+
+## 全面审查：同类逻辑/代码错误的排查清单（2026-10-06，v0.5.5）
+
+起因：转场里漏了一个 `snapshot.pop()` 造成"相框闪屏 + 新图瞬间弹出"。这类 bug
+**单测覆盖不到、肉眼现象又容易误判**，所以把同类风险做成固定检查项。
+
+### 1. GtkSnapshot 栈：`save/restore` 与 `push_*/pop` 是**同一个栈**，必须严格配对
+
+GTK4 源码里 `gtk_snapshot_save()` 与 `gtk_snapshot_push_*(opacity/clip/transform)`
+都往同一个 state 栈压栈；`gtk_snapshot_restore()` 会 `g_return_if_fail(state == SAVE)`，
+`gtk_snapshot_pop()` 要求栈顶是 group。**配错对象就静默失效**：
+`save()` + `push_opacity()` + `restore()` 的结果是 —— `restore()` 发现栈顶是 group，
+断言失败直接返回，**那个 opacity 组永远不闭合**，把之后画的遮罩/相框全吞进去。
+
+所以每改一次绘制代码，必须按**括号配对**逐块核对，而不是看总数是否相等。
+当前 `media_view.rs` 的三处（媒体 / 旧图 / 新图）与两条分支（九宫格 / 遮罩回退）均已核对：
+
+| 块 | 开 | 闭 |
+|---|---|---|
+| 外层（含拖动偏移） | `save` | 分支 return 前 `restore`（九宫格 L546 / 回退 L644） |
+| 媒体裁剪 | `save` + `push_clip` | `pop` + `restore` |
+| 旧图 | `save` + `push_opacity` | `pop` + `restore` ← **就这里漏过 pop** |
+| 新图 | `save` + `push_opacity` (+`push_clip`) | `pop` (+`pop`) + `restore` |
+
+### 2. "绘制矩形随内容变化"时，不能只看当前矩形
+
+`prev_rect` 那个 bug 的一般形式：**一个会随内容变化的几何量，动画却假定它不变**。
+- 相框尺寸由素材比例推导 → 换素材时矩形变 → 用新矩形画旧图必然对不齐。
+- 结论：转场里凡是"上一张"的几何，都必须**在切换的那一刻存下来**；
+  若某个效果要求两张图处于同一坐标系，就**统一铺满同一块矩形**（推动类用的就是这招），
+  而不是指望两帧矩形恰好相同。
+
+### 3. 浮点→整数一律 `.round()`，且同一逻辑只允许一套坐标
+
+- `geometry.rs` 已统一 `.round()` ✓；
+- 反例（已修）：控件命中检测用 `(mx - fx as i32) as f64` —— 先截断再加回浮点，
+  与绘制侧（整数几何）不是同一套坐标，在 1.6x 缩放下按钮"看得到点不到"。
+  **修法：全程 f64，最后才 round。**
+
+### 4. 装饰类代码禁止 `expect()`
+
+托盘图标构造里的 `ImageSurface::create(..).expect(..)` 一旦失败（OOM / 后端异常）
+会让整个程序 panic —— 而它只是画一个 22x22 的图标。
+**修法：`match` 失败 → `warn!` + 返回空 pixmap，让宿主退回 `IconName`。**
+
+### 5. 新增配置字段必须带 serde 默认值（旧配置兼容）
+
+`Config` 及各子结构均已 `#[serde(default)]` ✓，因此旧版 `config.toml`
+缺少 `[transition]` 整段也能正常加载，不会报错或丢配置。**新增字段时保持这条。**
+
+### 6. 排查过、确认**没有**问题的项
+
+- RefCell 重复借用（`borrow()` 跨语句持有 + 同 cell `borrow_mut()`）：未发现。
+  `hypr.rs` 那处是作用域内借用 + `state`/`state.timer` 两个不同 cell。
+- 定时器泄漏：5 处 `timeout_add_local` 均用 `WeakRef` + 代号（gen）识别过期回调，
+  结束时 `ControlFlow::Break` ✓
+- 配置字符串 match：`frame.fit` / `video.mode` / `effect` 都有 sanitize 兜底 ✓
+- `unwrap()`：生产路径仅 `media_view.rs:1150` 的 `tr.unwrap()`，
+  受 `tr.is_some()` 守卫 ✓（可读性上建议改 `let Some(..) = tr`）

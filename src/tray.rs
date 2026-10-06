@@ -357,11 +357,24 @@ impl Tray {
 fn icon_pixmap_variant() -> glib::Variant {
     const S: i32 = 22;
     let mut data: Vec<u8> = vec![0; (S * S * 4) as usize];
+    // 托盘图标只是装饰：任何一步失败都不该 panic（宿主会自动退回 IconName）
+    let surface = match cairo::ImageSurface::create(cairo::Format::ARgb32, S, S) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::warn!("托盘图标 surface 创建失败（{e}），退回 IconName");
+            let arr: Vec<(i32, i32, Vec<u8>)> = vec![(S, S, data)];
+            return glib::Variant::from(arr);
+        }
+    };
     {
-        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, S, S)
-            .expect("托盘图标 surface");
-        {
-            let cr = cairo::Context::new(&surface).expect("托盘图标 cairo");
+        let cr = match cairo::Context::new(&surface) {
+            Ok(c) => c,
+            Err(e) => {
+                crate::warn!("托盘图标 cairo 上下文创建失败（{e}），退回 IconName");
+                let arr: Vec<(i32, i32, Vec<u8>)> = vec![(S, S, data)];
+                return glib::Variant::from(arr);
+            }
+        };
             // 深板岩色：与顶栏其它系统图标同一色系（深板岩/蓝灰），
             // 在浅色顶栏上不再"发白"。
             cr.set_source_rgba(0.16, 0.18, 0.22, 1.0);
@@ -404,7 +417,6 @@ fn icon_pixmap_variant() -> glib::Variant {
                 }
             }
         });
-    }
     // SNI 的 IconPixmap 实际签名是 **a(iiay)** —— "一个元素的数组"，
     // 每个元素才是 (宽, 高, ARGB像素)。直接返回 (iiay) 会被 quickshell 拒收：
     //   "expected a(iiay) got (iiay)"  → 该项被判无效。
