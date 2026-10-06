@@ -3,6 +3,25 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.3] - 2026-10-06
+
+### 优化：波前改成"半透明的浪头"，并且会扭动
+用户反馈："效果好多了，画面有些涟漪，但是扩散到圆环本身建议半透明，同时也应该有涟漪。"
+
+1. **波前半透明**：圈层不透明度由外向内递增（0.35 → 0.57 → 0.79 → 1.0 → 1.0）。
+   最外层只 35% → 透过它还能看到旧图 → **新旧交界不再是一条硬边**，
+   而是柔化的过渡；最内层必须 100%（否则整幅照片发虚）。
+2. **波前会扭动**：那几条亮环不再画成几何正圆，而是**半径按正弦起伏**
+   （一圈 7 个起伏、幅度 3%），且**相位随扩散旋转** → 波前是"扭动的浪头"。
+
+两项都只用已有的快照/ cairo 原语，仍然是渲染器无关、零 CPU 像素运算。
+
+### 测试
+`ripple_bands_undulate_and_decay` 增加不透明度断言：最外层必须 < 0.6（半透明）、
+往里不递减、最内层恰为 1.0（不然整幅发虚）。
+
+44/44 测试连跑 3 次稳定、0 编译警告。
+
 ## [0.6.2] - 2026-10-06
 
 ### 修复：「涟漪」只有扩散的圆圈，底图没有水面晃动
@@ -408,6 +427,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.6.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.3
 [0.6.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.2
 [0.6.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.1
 [0.6.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.0

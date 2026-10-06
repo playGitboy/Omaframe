@@ -108,7 +108,7 @@ const RIPPLE_BAND_GAP: f64 = 0.16;
 /// 于是相邻圈层因为缩放不同而在交界处错位 —— 这就是"水面波动/折光"的观感来源。
 /// 相位交替（±）幅度递减（0.6^k），像真实水波一圈波峰一圈波谷。
 /// 抽成纯函数是为了能被单测覆盖（绘制代码本身单测不到）。
-fn ripple_bands(rf: &RippleGeo) -> Vec<(f64, f64)> {
+fn ripple_bands(rf: &RippleGeo) -> Vec<(f64, f64, f64)> {
     (0..RIPPLE_BANDS)
         .filter_map(|k| {
             let rk = 1.0 - RIPPLE_BAND_GAP * k as f64;
@@ -121,7 +121,10 @@ fn ripple_bands(rf: &RippleGeo) -> Vec<(f64, f64)> {
             }
             let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
             let amp = RIPPLE_AMP * 0.6f64.powi(k as i32) * sign;
-            Some((rk, 1.0 + amp))
+            // **最外层半透明**：波前是"半透的浪头"，透过它还能看到旧图
+            // → 新旧交界不再是一条硬边；往里逐层加深，约第 4 层全不透明。
+            let alpha = (0.35 + 0.22 * k as f64).min(1.0);
+            Some((rk, 1.0 + amp, alpha))
         })
         .collect()
 }
@@ -475,11 +478,13 @@ mod imp {
                             // 这些层都锚定在**波前**上，所以波纹随波前一起向外走。
                             // 最外层的圆半径就是波前 → 它同时充当"揭示边界"，
                             // 不需要再单独压一个圆形裁剪（少一次 push/pop，也少一处失衡风险）。
-                            for (rk, sc) in ripple_bands(&rf) {
+                            for (rk, sc, alpha) in ripple_bands(&rf) {
                                 let r = (rf.r * rk) as f32;
                                 let cx = media_rect.x() as f64 + rf.cx * media_rect.width() as f64;
                                 let cy = media_rect.y() as f64 + rf.cy * media_rect.height() as f64;
                                 snapshot.save();
+                                // 各层不透明度不同（外淡内实）→ 波前柔化，不出现硬边
+                                snapshot.push_opacity(alpha);
                                 snapshot.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(
                                     gtk::graphene::Rect::new(
                                         cx as f32 - r,
@@ -499,6 +504,7 @@ mod imp {
                                 ));
                                 snapshot.append_texture(&tex, &bleed);
                                 snapshot.pop(); // rounded clip
+                                snapshot.pop(); // opacity（本层）
                                 snapshot.restore();
                             }
                         } else {
@@ -540,10 +546,29 @@ mod imp {
                         let cr = snapshot.append_cairo(&frame_rect);
                         cr.translate(media_rect.x() as f64, media_rect.y() as f64);
                         let (cx, cy) = (rf.cx * mwf, rf.cy * mhf);
+                        // 环**不做成正圆**：半径按正弦起伏（相位随扩散旋转）→ 波前是
+                        // "扭动的浪头"而不是几何圆，涟漪感才出来。
+                        let phase = rf.p * std::f64::consts::TAU * 1.5;
+                        const WAVES: f64 = 7.0; // 环上一圈 7 个起伏
+                        const WAMP: f64 = 0.03; // 起伏幅度（半径的 3%）
+                        const SEG: usize = 144;
                         for (r, a, w) in rings {
+                            if r < 2.0 {
+                                continue;
+                            }
                             cr.set_line_width(w);
                             cr.set_source_rgba(1.0, 1.0, 1.0, a);
-                            cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+                            for i in 0..=SEG {
+                                let th = i as f64 / SEG as f64 * std::f64::consts::TAU;
+                                let rr = r * (1.0 + WAMP * (th * WAVES + phase).sin());
+                                let (px, py) = (cx + rr * th.cos(), cy + rr * th.sin());
+                                if i == 0 {
+                                    cr.move_to(px, py);
+                                } else {
+                                    cr.line_to(px, py);
+                                }
+                            }
+                            cr.close_path();
                             let _ = cr.stroke();
                         }
                     }
@@ -1543,7 +1568,7 @@ mod trans_tests {
         for w in bands.windows(2) {
             assert!(w[0].0 > w[1].0, "圈层半径必须递减（由大到小画）");
         }
-        for (i, (_, sc)) in bands.iter().enumerate() {
+        for (i, (_, sc, _)) in bands.iter().enumerate() {
             let d = sc - 1.0;
             assert!(d.abs() < 0.05, "第 {i} 层位移过大（会像图像撕裂）：{d}");
             assert!(d.abs() > 0.001, "第 {i} 层位移过小（看不出水感）");
@@ -1552,6 +1577,16 @@ mod trans_tests {
             assert!(d.signum() == want, "第 {i} 层相位应交替");
         }
         // 幅度递减
+        // 不透明度：最外层必须半透明（波前柔化），往里递增，且不超过 1
+        assert!(bands[0].2 < 0.6, "最外层应半透明，实际 {}", bands[0].2);
+        for w in bands.windows(2) {
+            // 往里**不递减**（到 1.0 后会平掉，不能要求严格递增）
+            assert!(w[0].2 <= w[1].2, "不透明度应往里递增：{} vs {}", w[0].2, w[1].2);
+        }
+        assert!(
+            (bands.last().unwrap().2 - 1.0).abs() < 1e-9,
+            "最内层必须完全不透明，否则整幅照片发虚"
+        );
         let amps: Vec<f64> = bands.iter().map(|b| (b.1 - 1.0).abs()).collect();
         for w in amps.windows(2) {
             assert!(w[0] > w[1], "圈层幅度必须逐层递减：{w:?}");
