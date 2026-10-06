@@ -96,8 +96,18 @@ struct RippleGeo {
     cy: f64,
 }
 
+/// 随机涟漪落点：内孔中心 ± `RIPPLE_DROP_JITTER`，夹到 [0.12, 0.88]，
+/// 以免波前从画面边缘外开始扩散（那样就看不出"滴入"的起点了）。
+fn random_drop_point() -> (f64, f64) {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let j = RIPPLE_DROP_JITTER;
+    let c = |v: f64| (0.5 + v).clamp(0.12, 0.88);
+    (c(rng.random_range(-j..j)), c(rng.random_range(-j..j)))
+}
+
 /// 涟漪圈层数：把新图分成这么多同心圈层分别绘制，层与层之间错位 → 水面波动。
-const RIPPLE_BANDS: usize = 5;
+const RIPPLE_BANDS: usize = 4;
 /// 每层的相对位移幅度（0.016 = 1.6%）。太大会变成"图像撕裂"，太小则看不出水感。
 const RIPPLE_AMP: f64 = 0.022;
 /// 圈层间距（波前半径的比例）：越大层越宽、断层越少越柔和
@@ -106,6 +116,11 @@ const RIPPLE_BAND_GAP: f64 = 0.16;
 const RIPPLE_WAVES: f64 = 5.0;
 /// 波前起伏幅度（半径的比例）—— 越大波前越"浪"
 const RIPPLE_WAVE_AMP: f64 = 0.05;
+/// 最外层（波前）的不透明度：越小波前越透、新旧交界越柔
+const RIPPLE_START_ALPHA: f64 = 0.25;
+/// 涟漪落点相对内孔中心的**最大随机偏移**（比例）。
+/// 0 = 永远滴在正中；0.22 = 落点落在中心 ±22% 的方框内 → 每次位置都不同。
+const RIPPLE_DROP_JITTER: f64 = 0.22;
 
 /// 涟漪圈层：`(半径系数, 缩放系数)`，半径是**波前半径的比例**。
 /// 由大到小绘制、后画的盖住先画的 → 每层只露出自己那一圈（正好是圆环带），
@@ -126,8 +141,11 @@ fn ripple_bands(rf: &RippleGeo) -> Vec<(f64, f64, f64)> {
             let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
             let amp = RIPPLE_AMP * 0.6f64.powi(k as i32) * sign;
             // **最外层半透明**：波前是"半透的浪头"，透过它还能看到旧图
-            // → 新旧交界不再是一条硬边；往里逐层加深，约第 4 层全不透明。
-            let alpha = (0.25 + 0.22 * k as f64).min(1.0);
+            // → 新旧交界不再是一条硬边；往里逐层加深，**最内层恰好不透明**。
+            // 用 k/层数 归一化（而不是固定步长）：改 RIPPLE_BANDS 时最内层仍是 1.0，
+            // 否则层数变少会让整幅照片永远差一点点透明度（发虚）。
+            let alpha = RIPPLE_START_ALPHA
+                + (1.0 - RIPPLE_START_ALPHA) * (k + 1) as f64 / RIPPLE_BANDS as f64;
             Some((rk, 1.0 + amp, alpha))
         })
         .collect()
@@ -167,6 +185,9 @@ pub struct TransAnim {
     pub kind: Effect,
     start: std::time::Instant,
     duration: std::time::Duration,
+    /// 涟漪落点（内孔比例 0..1）。**在转场开始时就定下**，
+    /// 整个动画期间不变 —— 否则每帧重算随机数会让涟漪抖动、圆心漂移。
+    ripple_c: (f64, f64),
 }
 
 impl TransAnim {
@@ -241,7 +262,13 @@ impl TransAnim {
             // 全程只有纹理 + 快照变换 + cairo 描边：**渲染器无关、无 CPU 像素运算**。
             Effect::Ripple => {
                 // 波前半径：p=1 时略大于"圆心到四角"的距离，保证彻底盖满（不残留旧图）
-                f.ripple = Some(TransAnim::ripple_geo(p, mw, mh, 0.5, 0.5));
+                f.ripple = Some(TransAnim::ripple_geo(
+                    p,
+                    mw,
+                    mh,
+                    self.ripple_c.0,
+                    self.ripple_c.1,
+                ));
                 // 旧图不动、不透明：被扩散的波前逐层盖住（涟漪"漫过"照片的感觉）
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
@@ -1340,6 +1367,7 @@ impl MediaView {
                 *imp.prev_rect.borrow_mut() = Some(imp.media_rect.get());
                 *imp.anim.borrow_mut() = Some(TransAnim {
                     kind: Effect::parse(kind),
+                    ripple_c: random_drop_point(),
                     start: std::time::Instant::now(),
                     duration: std::time::Duration::from_millis(ms.max(1) as u64),
                 });
@@ -1500,6 +1528,7 @@ mod trans_tests {
     fn anim(kind: Effect) -> TransAnim {
         TransAnim {
             kind,
+            ripple_c: (0.5, 0.5),
             start: std::time::Instant::now(),
             duration: std::time::Duration::from_millis(600),
         }
@@ -1509,6 +1538,7 @@ mod trans_tests {
     fn at_progress(kind: Effect, p: f64) -> TransAnim {
         TransAnim {
             kind,
+            ripple_c: (0.5, 0.5),
             start: std::time::Instant::now() - std::time::Duration::from_secs_f64(p * 0.6),
             duration: std::time::Duration::from_millis(600),
         }
@@ -1558,6 +1588,34 @@ mod trans_tests {
         assert_eq!(Effect::parse("pull_back"), Effect::PullBack);
         assert_eq!(Effect::parse(""), Effect::Fade);
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
+    }
+
+    /// **落点随机**：必须在合法范围内、确实会变化，且**整段动画期间固定**
+    /// （每帧重算随机数会让涟漪抖动、圆心漂移）。
+    #[test]
+    fn ripple_drop_point_is_random_bounded_and_stable() {
+        let pts: Vec<(f64, f64)> = (0..64).map(|_| random_drop_point()).collect();
+        for (x, y) in &pts {
+            assert!(
+                (0.12..=0.88).contains(x) && (0.12..=0.88).contains(y),
+                "落点越界：{x},{y}"
+            );
+        }
+        let mut uniq = pts.clone();
+        uniq.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        uniq.dedup();
+        assert!(uniq.len() > 8, "落点几乎不随机，64 次只有 {} 种", uniq.len());
+
+        // 同一段动画内落点必须恒定
+        let mut a = anim(Effect::Ripple);
+        a.ripple_c = (0.31, 0.72);
+        let g0 = a.frame(400.0, 300.0).ripple.unwrap();
+        let g1 = at_progress(Effect::Ripple, 0.5).frame(400.0, 300.0).ripple.unwrap();
+        assert!((g0.cx - 0.31).abs() < 1e-9 && (g0.cy - 0.72).abs() < 1e-9);
+        assert!(
+            (g1.cx - 0.5).abs() < 1e-9 && (g1.cy - 0.5).abs() < 1e-9,
+            "frame() 必须用 TransAnim 里存下的落点"
+        );
     }
 
     /// **涟漪回归（水面波动）**：圈层必须**半径递减**（由大到小逐层盖出圆环带）、

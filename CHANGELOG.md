@@ -3,6 +3,28 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.5] - 2026-10-06
+
+### 调参 + 新特性
+- `RIPPLE_BANDS` 5 → **4**（圈层更宽、断层更少）。
+- **涟漪落点随机偏移**：每次转场水滴落在内孔中心 ±22% 的方框内（`RIPPLE_DROP_JITTER`），
+  夹到 [0.12, 0.88] 以免波前从画面边缘外开始扩散（那样看不出"滴入"的起点）。
+  落点在**转场开始时定下并存入 `TransAnim::ripple_c`**，整段动画不变 ——
+  每帧重算随机数会让涟漪抖动、圆心漂移。
+
+### 顺带修掉一个"改层数就会踩到"的坑
+不透明度原来是**固定步长**（0.25 + 0.22k）：层数从 5 减到 4 时，最内层只有 0.91，
+**整幅照片会永远差一点点透明度（发虚）**。现在改成按 `(k+1)/层数` 归一化，
+最内层恒为 1.0 —— 以后改 `RIPPLE_BANDS` 不会再碰到这个问题。
+（这个坑是现有测试 `最内层必须恰为 1.0` 抓出来的。）
+
+### 测试
+新增 `ripple_drop_point_is_random_bounded_and_stable`：落点必须在 [0.12,0.88] 内、
+64 次采样要有 >8 种不同位置、且 `frame()` 必须使用 `TransAnim` 里存下的落点
+（同段动画恒定）。
+
+45/45 测试连跑 3 次稳定、0 编译警告。
+
 ## [0.6.4] - 2026-10-06
 
 ### 调参（按用户实测手感）
@@ -442,6 +464,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.6.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.5
 [0.6.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.4
 [0.6.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.3
 [0.6.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.2
