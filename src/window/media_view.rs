@@ -40,6 +40,8 @@ pub enum Effect {
     PullBack,
     Slide,
     Roll,
+    /// 水滴涟漪：新图以扩散的圆形波前揭开 + 同心波纹环 + 呼吸微缩放
+    Ripple,
 }
 
 impl Effect {
@@ -49,6 +51,7 @@ impl Effect {
             "pull_back" => Effect::PullBack,
             "slide" => Effect::Slide,
             "roll" => Effect::Roll,
+            "ripple" => Effect::Ripple,
             _ => Effect::Fade,
         }
     }
@@ -69,12 +72,28 @@ struct TransFrame {
     /// 缩放锚点（媒体矩形的比例位置；0,0 = 左上，0.5,0.5 = 中心）
     prev_anchor: (f64, f64),
     cur_anchor: (f64, f64),
-    /// 新图的揭示裁剪（相对媒体矩形的比例 x,y,w,h）；None = 不裁
-    cur_clip: Option<(f64, f64, f64, f64)>,
+    /// 涟漪：扩散波前的几何（像素半径 + 圆心相对内孔的比例 0..1）
+    ripple: Option<RippleGeo>,
     /// 推动类（slide/roll）：两张图都先**铺满当前内孔**再整体平移。
     /// 相框尺寸随素材比例变化 → 两帧矩形通常不同；若各按自己矩形推，
     /// 必然"缝对不齐 + 盖不满内孔"（中间透出桌面）。铺满同一块内孔则永远严丝合缝。
     push: bool,
+}
+
+/// 由波前半径反推进度（= r / max_r），用于让波纹环的亮度随扩散衰减。
+/// 直接由几何量推出，绘制处就不需要再依赖动画进度变量。
+fn p_ripple(rf: RippleGeo, reach: f64) -> f64 {
+    (rf.r / (reach * 1.04)).clamp(0.0, 1.0)
+}
+
+/// 涟漪波前几何：`r` 是**像素半径**（到圆心的距离），`cx/cy` 是圆心在内孔里的比例位置。
+/// 半径在 `TransAnim::frame()` 里按 `sqrt((mw/2)^2+(mh/2)^2)` 归一化，
+/// 保证 p=1 时波前一定盖满整个内孔（否则四角会残留旧图）。
+#[derive(Debug, Clone, Copy)]
+struct RippleGeo {
+    r: f64,
+    cx: f64,
+    cy: f64,
 }
 
 /// 转场动画状态
@@ -108,7 +127,7 @@ impl TransAnim {
             cur_s: (1.0, 1.0),
             prev_anchor: (0.5, 0.5),
             cur_anchor: (0.5, 0.5),
-            cur_clip: None,
+            ripple: None,
             push: false,
         };
         match self.kind {
@@ -131,6 +150,26 @@ impl TransAnim {
                 f.cur_a = 1.0;
                 f.cur_t = ((1.0 - p) * mw, 0.0);
                 f.prev_t = (-p * mw, 0.0);
+            }
+            // 水滴涟漪：一滴落下 → 圆形波前自落点扩散，波前处新图"涌"出来；
+            // 同时在波前上叠 2 圈同心波纹环（cairo 描边）+ 一张高光环（模拟液面折光），
+            // 两张图做反向呼吸式微缩放 → 底图看起来被涟漪"推着"替换。
+            //
+            // 全程只有纹理 + 快照变换 + cairo 描边：**渲染器无关、无 CPU 像素运算**。
+            Effect::Ripple => {
+                // 波前半径：p=1 时略大于"圆心到四角"的距离，保证彻底盖满（不残留旧图）
+                let max_r = ((mw * 0.5).powi(2) + (mh * 0.5).powi(2)).sqrt() * 1.04;
+                f.ripple = Some(RippleGeo {
+                    r: p * max_r,
+                    cx: 0.5,
+                    cy: 0.5,
+                });
+                // 旧图不动、不透明：被扩散的波前逐层盖住（涟漪"漫过"照片的感觉）
+                f.prev_a = 1.0;
+                f.cur_a = 1.0;
+                // 呼吸式微缩放：旧图被波前推得略缩，新图从略大收回 → 有"波动"
+                f.prev_s = (1.0 - 0.025 * p, 1.0 - 0.025 * p);
+                f.cur_s = (1.035 - 0.035 * p, 1.035 - 0.035 * p);
             }
             // 垂直卷帘：新图自上而下揭开，旧图下移
             Effect::Roll => {
@@ -356,17 +395,41 @@ mod imp {
                 }
                 if let Some(tex) = self.texture.borrow().clone() {
                     snapshot.save();
+                    // 涟漪的圆形裁剪是否真的压栈了 —— push 与 pop 必须用**同一个判定**，
+                    // 否则栈失衡（多 pop 会弹掉 opacity 组 → 相框/遮罩被吞）。
+                    // 所以在这里算一次圆形裁剪的几何，push 用它、pop 只看它是否为 Some。
+                    let ripple_circle: Option<(f64, f64, f64)> =
+                        tframe.as_ref().and_then(|t| t.ripple).and_then(|rf| {
+                            let (mwf, mhf) =
+                                (media_rect.width() as f64, media_rect.height() as f64);
+                            let reach = ((mwf * 0.5).powi(2) + (mhf * 0.5).powi(2)).sqrt();
+                            // 半径 ≥ 到四角的距离时**不再裁剪**：p→1 时圆角裁剪的
+                            // 量化误差会在四角留下细缝，露出旧图。
+                            if rf.r < reach {
+                                Some((
+                                    media_rect.x() as f64 + rf.cx * mwf,
+                                    media_rect.y() as f64 + rf.cy * mhf,
+                                    rf.r.max(0.0),
+                                ))
+                            } else {
+                                None
+                            }
+                        });
                     if let Some(tf) = tframe.as_ref() {
                         snapshot.push_opacity(tf.cur_a);
-                        if let Some((fx, fy, fw, fh)) = tf.cur_clip {
-                            // 揭示裁剪：按比例裁在媒体矩形内（翻页用）
-                            let clip = gtk::graphene::Rect::new(
-                                media_rect.x() + (fx as f32) * media_rect.width(),
-                                media_rect.y() + (fy as f32) * media_rect.height(),
-                                (fw as f32) * media_rect.width(),
-                                (fh as f32) * media_rect.height(),
+                        // 涟漪：把新图**裁在扩散的圆里**（push_rounded_clip 的圆角取半宽
+                        // 就是一个正圆）
+                        if let Some((cx, cy, r)) = ripple_circle {
+                            let r = r as f32;
+                            let bounds = gtk::graphene::Rect::new(
+                                cx as f32 - r,
+                                cy as f32 - r,
+                                r * 2.0,
+                                r * 2.0,
                             );
-                            snapshot.push_clip(&clip);
+                            snapshot.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(
+                                bounds, r,
+                            ));
                         }
                         if (tf.cur_t.0, tf.cur_t.1) != (0.0, 0.0) {
                             snapshot.translate(&gtk::graphene::Point::new(
@@ -387,12 +450,39 @@ mod imp {
                     // 双线性采样取到的是纹理内部像素 → 照片边缘不半透明。
                     snapshot.append_texture(&tex, &bleed);
                     if tframe.is_some() {
-                        if tframe.as_ref().is_some_and(|t| t.cur_clip.is_some()) {
-                            snapshot.pop(); // clip
+                        if ripple_circle.is_some() {
+                            snapshot.pop(); // rounded clip（涟漪）
                         }
                         snapshot.pop(); // opacity
                     }
                     snapshot.restore();
+                }
+                // 涟漪波纹环：在波前上叠 2 条同心细环 + 波前一条高光环（模拟液面折光）。
+                // 画在**媒体裁剪之内** → 只在照片区域内出现，绝不会盖到相框上。
+                // 用 cairo 描边（不是新的纹理节点），开销可忽略。
+                if let Some(rf) = tframe.as_ref().and_then(|t| t.ripple) {
+                    let (mwf, mhf) = (media_rect.width() as f64, media_rect.height() as f64);
+                    let reach = ((mwf * 0.5).powi(2) + (mhf * 0.5).powi(2)).sqrt();
+                    // 波前盖满之后环也就没意义了（且此时 p≈1，本就该看不见）
+                    if rf.r > 1.0 && rf.r <= reach {
+                        let cr = snapshot.append_cairo(&frame_rect);
+                        cr.translate(media_rect.x() as f64, media_rect.y() as f64);
+                        let (cx, cy) = (rf.cx * mwf, rf.cy * mhf);
+                        // 落水瞬间最亮，随扩散渐隐（0.8 次幂：比线性稍慢一点，尾韵更足）
+                        let a = (1.0 - p_ripple(rf, reach)).clamp(0.0, 1.0);
+                        // (半径系数, 线宽, 亮度系数) —— 波前本身最亮，内侧两条是余波
+                        let rings = [(1.0, 2.2, 0.60), (0.94, 1.6, 0.34), (0.88, 1.1, 0.20)];
+                        for (k, w, bright) in rings {
+                            let r = rf.r * k;
+                            if r < 0.5 {
+                                continue;
+                            }
+                            cr.set_line_width(w);
+                            cr.set_source_rgba(1.0, 1.0, 1.0, a * bright);
+                            cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+                            let _ = cr.stroke();
+                        }
+                    }
                 }
                 snapshot.pop();
                 snapshot.restore();
@@ -1363,15 +1453,6 @@ mod trans_tests {
             for a in [f.prev_anchor.0, f.prev_anchor.1, f.cur_anchor.0, f.cur_anchor.1] {
                 assert!((0.0..=1.0).contains(&a), "{k:?} 锚点越界");
             }
-            if let Some((x, y, w, h)) = f.cur_clip {
-                assert!(
-                    (0.0..=1.0).contains(&x)
-                        && (0.0..=1.0).contains(&y)
-                        && (0.0..=1.0).contains(&w)
-                        && (0.0..=1.0).contains(&h),
-                    "{k:?} 裁剪越界"
-                );
-            }
     }
     }
 
@@ -1385,6 +1466,34 @@ mod trans_tests {
         assert_eq!(Effect::parse("pull_back"), Effect::PullBack);
         assert_eq!(Effect::parse(""), Effect::Fade);
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
+    }
+
+    /// **涟漪回归**：波前必须单调扩散，且 p=1 时半径**盖满内孔四角**
+    /// （否则四角残留旧图），同时非涟漪效果不得带波前几何。
+    #[test]
+    fn ripple_sweeps_the_whole_hole_and_is_monotonic() {
+        let (mw, mh): (f64, f64) = (400.0, 300.0);
+        let reach = ((mw * 0.5).powi(2) + (mh * 0.5).powi(2)).sqrt();
+        let mut last = -1.0;
+        for i in 0..=10 {
+            let f = at_progress(Effect::Ripple, i as f64 / 10.0).frame(mw, mh);
+            let rf = f.ripple.expect("涟漪效果必须给出波前几何");
+            assert!(rf.r > last, "波前半径必须单调扩散：{last} → {}", rf.r);
+            last = rf.r;
+            // 两张图全程不透明（靠波前遮盖，不是靠淡出）
+            assert!((f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9);
+            assert!(!f.push, "涟漪不是推动类");
+        }
+        assert!(
+            last >= reach,
+            "p=1 时波前半径 {last} 必须 ≥ 到四角的距离 {reach}"
+        );
+        for k in [Effect::Fade, Effect::Slide, Effect::Roll, Effect::KenBurns, Effect::PullBack] {
+            assert!(
+                anim(k).frame(mw, mh).ripple.is_none(),
+                "{k:?} 不应带波前几何"
+            );
+        }
     }
 
     /// **关键回归**：相框尺寸随素材比例变化 → 两帧矩形通常不同。

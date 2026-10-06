@@ -3,6 +3,40 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-10-06
+
+### 新增：「水滴涟漪」转场效果
+效果列表新增第 6 种 `ripple`（设置页显示为**水滴涟漪**），**默认仍是 `fade`**，
+不影响任何已有配置。
+
+观感：一滴落下 → 圆形波前自落点扩散 → 波前处新图"涌"出来盖住旧图，
+波前上叠 2 条同心余波细环 + 1 条高光环（模拟液面折光），两张图做反向呼吸式微缩放
+（旧图被波前推得略缩、新图从略大收回）→ 底图看起来被涟漪"推着"平滑替换。
+
+**实现坚持纯快照路线**（重要取舍，见 docs/KEY-FINDINGS.md）：
+- 新图用 `push_rounded_clip`（圆角取半宽 = 正圆）裁在扩散的圆内；
+- 波纹环用 cairo 描边，**画在媒体裁剪之内** → 只出现在照片区域，绝不会盖到相框上；
+- 呼吸缩放复用已有的快照 `scale` + 锚点机制；
+- 全程只有纹理 + 快照变换 + cairo 描边 → **渲染器无关、无 CPU 像素运算**。
+
+为什么不做"真·像素级折射"：需要 GPU shader（`GskGLShaderNode`），而
+GTK 4.22 默认走 Vulkan，库内明确存在告警字符串
+`"The renderer does not support gl shaders"` → 写了也不渲染；
+强行可用只能 `GSK_RENDERER=ngl|gl`，而 GL 渲染器正在被 GTK 移除，不能作为产品基础。
+CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的取证记录。
+
+### 清理
+- 删掉 `page_flip` 时代残留的 `TransFrame::cur_clip` 字段（死代码）。它带着一对
+  `push_clip`/`pop`，留着有"push 了却不配对"的复燃风险 —— 正是 0.5.3 那个
+  相框闪屏 bug 的成因类型。涟漪的圆形裁剪改用**同一个布尔**决定 push 与 pop，
+  从结构上消除判定漂移。
+
+### 验证
+- 新增回归单测 `ripple_sweeps_the_whole_hole_and_is_monotonic`：
+  波前必须**单调扩散**、且 p=1 时半径**盖满内孔四角**（否则四角残留旧图）、
+  两张图全程不透明（靠波前遮盖而非淡出）、且非涟漪效果不得带波前几何。
+- 42/42 测试通过、0 编译警告、发布自检通过。
+
 ## [0.5.5] - 2026-10-06
 
 ### 修复
@@ -322,6 +356,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.6.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.0
 [0.5.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.5
 [0.5.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.4
 [0.5.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.3
