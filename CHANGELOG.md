@@ -3,6 +3,37 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.0] - 2026-10-06
+
+### 新增转场：「四角涟漪」
+效果列表新增第 7 种 `corner_ripple`（设置页**四角涟漪**），**默认仍是 `fade`**，
+不影响任何已有配置。
+
+算法与「水滴涟漪」完全相同（同心圈层水面波动 + 波前半透明细带 + 波前扭动 +
+呼吸微缩放），唯一区别：**中心点每次随机取一个角**（`CORNER_INSET = 0.05` 略内缩，
+免得波前从画面外起、看不出"从角开始"）。涟漪自该角向对角荡开、漫过整幅画面。
+
+### 顺带修掉一个隐藏 bug（影响水滴涟漪）
+`reach`（波前要扫多远）原本按 **`sqrt((mw/2)² + (mh/2)²)`** 算 ——
+即**假定圆心在画面正中**。但落点带 ±22% 随机偏移，实际圆心可以偏到 0.72；
+从角起涟漪时更是偏到 0.95。按居中算会把行程**算小一大截**，导致
+**对角区域盖不住 → 旧图在对角残留**（与 0.7.2 修的那个残留是同源现象）。
+
+现在改为按**圆心到四个角里最远的那个**计算：
+```
+dx = max(cx, 1-cx) · mw
+dy = max(cy, 1-cy) · mh
+reach = √(dx² + dy²)
+```
+圆心居中时结果与原来完全一致（向后兼容），偏心/角起时才正确放大。
+
+### 测试
+新增 `corner_ripple_starts_from_a_corner_and_reaches_far_corner`：
+中心必须**严格落在四角之一**、四个角都能被随机到（200 次采样）、
+p=1 时行程必须**覆盖对角**、且与水滴涟漪共用同一套圈层算法（层数一致）。
+
+46/46 测试连跑 3 次稳定、0 编译警告。
+
 ## [0.7.2] - 2026-10-06
 
 ### 修复：竖屏 → 横屏 时，涟漪效果下旧图有明显残留
@@ -529,6 +560,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.8.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.0
 [0.7.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.7.2
 [0.7.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.7.1
 [0.7.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.7.0

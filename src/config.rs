@@ -150,13 +150,14 @@ pub struct FrameConfig {
 /// 可选转场效果（key → 界面名）。
 /// 实现约束：只用 snapshot 的 translate/scale/push_opacity/push_clip，
 /// **不做 CPU 像素运算、不建 ImageSurface、不用 filter** —— 保证开销在 GPU 侧。
-pub const TRANSITION_EFFECTS: [(&str, &str); 6] = [
+pub const TRANSITION_EFFECTS: [(&str, &str); 7] = [
     ("fade", "淡入淡出"),
     ("ken_burns", "缓慢推近"),
     ("pull_back", "拉远"),
     ("slide", "横向滑动"),
     ("roll", "垂直卷帘"),
     ("ripple", "水滴涟漪"),
+    ("corner_ripple", "四角涟漪"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

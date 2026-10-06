@@ -42,6 +42,8 @@ pub enum Effect {
     Roll,
     /// 水滴涟漪：新图以扩散的圆形波前揭开 + 同心波纹环 + 呼吸微缩放
     Ripple,
+    /// 四角涟漪：算法同水滴涟漪，但**每次从随机一个角**作为中心起波
+    CornerRipple,
 }
 
 impl Effect {
@@ -52,6 +54,7 @@ impl Effect {
             "slide" => Effect::Slide,
             "roll" => Effect::Roll,
             "ripple" => Effect::Ripple,
+            "corner_ripple" => Effect::CornerRipple,
             _ => Effect::Fade,
         }
     }
@@ -104,6 +107,33 @@ fn random_drop_point() -> (f64, f64) {
     let j = RIPPLE_DROP_JITTER;
     let c = |v: f64| (0.5 + v).clamp(0.12, 0.88);
     (c(rng.random_range(-j..j)), c(rng.random_range(-j..j)))
+}
+
+/// 四角涟漪的中心内缩量（避免波前从画面外起，那样看不出"从角开始"）。
+const CORNER_INSET: f64 = 0.05;
+
+/// 四角涟漪的中心：**随机取一个角**。
+fn random_corner_point() -> (f64, f64) {
+    use rand::Rng;
+    let i: usize = rand::rng().random_range(0..4);
+    let (lo, hi) = (CORNER_INSET, 1.0 - CORNER_INSET);
+    match i {
+        0 => (lo, lo),
+        1 => (hi, lo),
+        2 => (lo, hi),
+        _ => (hi, hi),
+    }
+}
+
+/// 依效果挑选涟漪中心：
+///  · 四角涟漪 → 随机一个角；
+///  · 水滴涟漪 / 其它 → 中心附近随机（`RIPPLE_DROP_JITTER`）。
+fn ripple_center_for(effect: Effect) -> (f64, f64) {
+    if effect == Effect::CornerRipple {
+        random_corner_point()
+    } else {
+        random_drop_point()
+    }
 }
 
 /// 涟漪圈层数：把新图分成这么多同心圈层分别绘制，层与层之间错位 → 水面波动。
@@ -209,7 +239,12 @@ impl TransAnim {
     /// 进程被调度延迟几十毫秒就会算出偏差很大的进度（踩过：p=0.75 实测 0.984），
     /// 拿它断言中段数值必然 flaky。
     fn ripple_geo(p: f64, mw: f64, mh: f64, cx: f64, cy: f64) -> RippleGeo {
-        let reach = ((mw * 0.5).powi(2) + (mh * 0.5).powi(2)).sqrt();
+        // 圆心到**四个角里最远的那个**的距离。
+        // 不能假定圆心在正中：落点带 ±22% 随机偏移、四角涟漪更是直接从角起，
+        // 若按 sqrt((mw/2)^2+(mh/2)^2) 算会小很多 → 对角盖不住 → 旧图残留。
+        let dx = cx.max(1.0 - cx) * mw;
+        let dy = cy.max(1.0 - cy) * mh;
+        let reach = (dx * dx + dy * dy).sqrt();
         // 行程比"盖满四角"再远 45%：揭示约在 69% 进度处完成，
         // 余下 31% 让涟漪继续向外荡开（否则揭示一结束就再看不到涟漪）。
         let max_r = reach * 1.45;
@@ -262,7 +297,7 @@ impl TransAnim {
             // 两张图做反向呼吸式微缩放 → 底图看起来被涟漪"推着"替换。
             //
             // 全程只有纹理 + 快照变换 + cairo 描边：**渲染器无关、无 CPU 像素运算**。
-            Effect::Ripple => {
+            Effect::Ripple | Effect::CornerRipple => {
                 // 波前半径：p=1 时略大于"圆心到四角"的距离，保证彻底盖满（不残留旧图）
                 f.ripple = Some(TransAnim::ripple_geo(
                     p,
@@ -1371,9 +1406,10 @@ impl MediaView {
                 *imp.prev_tex.borrow_mut() = Some(cur);
                 // 记住上一张**当时的**媒体矩形（相框尺寸随素材比例变，两帧矩形通常不同）
                 *imp.prev_rect.borrow_mut() = Some(imp.media_rect.get());
+                let eff = Effect::parse(kind);
                 *imp.anim.borrow_mut() = Some(TransAnim {
-                    kind: Effect::parse(kind),
-                    ripple_c: random_drop_point(),
+                    kind: eff,
+                    ripple_c: ripple_center_for(eff),
                     start: std::time::Instant::now(),
                     duration: std::time::Duration::from_millis(ms.max(1) as u64),
                 });
@@ -1468,9 +1504,10 @@ impl MediaView {
                 if let Some(cur) = imp.texture.borrow().clone() {
                     *imp.prev_tex.borrow_mut() = Some(cur);
                     *imp.prev_rect.borrow_mut() = Some(imp.media_rect.get());
+                    let eff = Effect::parse(kind);
                     *imp.anim.borrow_mut() = Some(TransAnim {
-                        kind: Effect::parse(kind),
-                        ripple_c: random_drop_point(),
+                        kind: eff,
+                        ripple_c: ripple_center_for(eff),
                         start: std::time::Instant::now(),
                         duration: std::time::Duration::from_millis(ms.max(1) as u64),
                     });
@@ -1628,6 +1665,53 @@ mod trans_tests {
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
     }
 
+    /// **四角涟漪回归**：中心必须落在**四个角之一**（不只是"偏心"），
+    /// 四个角都要能被随机到；且 `reach` 必须按**圆心到四角最远者**计算 ——
+    /// 否则从角起波时对角盖不住，旧图会在对角残留。
+    #[test]
+    fn corner_ripple_starts_from_a_corner_and_reaches_far_corner() {
+        let (mw, mh): (f64, f64) = (400.0, 300.0);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let (x, y) = random_corner_point();
+            assert!(
+                (x - CORNER_INSET).abs() < 1e-9 || (x - (1.0 - CORNER_INSET)).abs() < 1e-9,
+                "x 必须贴角：{x}"
+            );
+            assert!(
+                (y - CORNER_INSET).abs() < 1e-9 || (y - (1.0 - CORNER_INSET)).abs() < 1e-9,
+                "y 必须贴角：{y}"
+            );
+            seen.insert(((x * 100.0) as i32, (y * 100.0) as i32));
+        }
+        assert_eq!(seen.len(), 4, "四个角都必须能被随机到，实际 {}", seen.len());
+
+        // 角落里：波前行程必须覆盖到**对角**（否则对角残留旧图）
+        let (cx, cy) = (CORNER_INSET, CORNER_INSET);
+        let g = TransAnim::ripple_geo(1.0, mw, mh, cx, cy);
+        let far = {
+            let dx = (1.0 - cx) * mw;
+            let dy = (1.0 - cy) * mh;
+            (dx * dx + dy * dy).sqrt()
+        };
+        assert!(
+            g.r >= far,
+            "从角起波时 p=1 必须盖到对角：r={} < 对角距离={far}",
+            g.r
+        );
+
+        // 接线：四角涟漪必须带波前几何，且与水滴涟漪共用同一套圈层算法
+        let f = anim(Effect::CornerRipple).frame(mw, mh);
+        assert!(f.ripple.is_some(), "四角涟漪必须带波前几何");
+        assert!(!f.push, "四角涟漪不是推动类");
+        let d = anim(Effect::Ripple).frame(mw, mh);
+        assert_eq!(
+            ripple_bands(&f.ripple.unwrap()).len(),
+            ripple_bands(&d.ripple.unwrap()).len(),
+            "两者圈层数应一致（共用算法）"
+        );
+    }
+
     /// **落点随机**：必须在合法范围内、确实会变化，且**整段动画期间固定**
     /// （每帧重算随机数会让涟漪抖动、圆心漂移）。
     #[test]
@@ -1770,6 +1854,7 @@ mod trans_tests {
         ] {
             assert!(anim(k).frame(mw, mh).ripple.is_none(), "{k:?} 不应带波前几何");
         }
+        assert!(anim(Effect::CornerRipple).frame(mw, mh).ripple.is_some());
     }
 
     /// **关键回归**：相框尺寸随素材比例变化 → 两帧矩形通常不同。
