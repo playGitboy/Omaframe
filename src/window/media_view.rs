@@ -140,12 +140,14 @@ fn ripple_bands(rf: &RippleGeo) -> Vec<(f64, f64, f64)> {
             }
             let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
             let amp = RIPPLE_AMP * 0.6f64.powi(k as i32) * sign;
-            // **最外层半透明**：波前是"半透的浪头"，透过它还能看到旧图
-            // → 新旧交界不再是一条硬边；往里逐层加深，**最内层恰好不透明**。
-            // 用 k/层数 归一化（而不是固定步长）：改 RIPPLE_BANDS 时最内层仍是 1.0，
-            // 否则层数变少会让整幅照片永远差一点点透明度（发虚）。
-            let alpha = RIPPLE_START_ALPHA
-                + (1.0 - RIPPLE_START_ALPHA) * (k + 1) as f64 / RIPPLE_BANDS as f64;
+            // **只有最外层半透明**（波前是"半透的浪头"，透过它能看到旧图 →
+            // 新旧交界不是硬边），往里**必须完全不透明**。
+            //
+            // 曾经写成从 0.25 一路爬到 1.0 的渐变，结果外半圈一直是半透明的：
+            // 圈层叠加在旧图上 → 旧图从**整片外侧**透出来（不只是波前一条细带）；
+            // 竖屏→横屏时旧图盖不满新矩形，半透明处下面什么都没有 → 桌面透出、
+            // 新图外侧一片发白。用户报的"竖屏图片明显残留"就是这个。
+            let alpha = if k == 0 { RIPPLE_START_ALPHA } else { 1.0 };
             Some((rk, 1.0 + amp, alpha))
         })
         .collect()
@@ -450,7 +452,11 @@ mod imp {
                         // 这样两张图铺在同一块矩形上做整体平移 → 任何时刻都严丝合缝。
                         // 其余效果：按旧图**当时自己的矩形**画（换素材时相框尺寸会变，
                         // 用新矩形画旧图会盖不满内孔 → 中间透出桌面）。
-                        let prev_bleed = if tf.push {
+                        // 推动类与涟漪都要"铺满当前内孔"：
+                        //  · 推动类：两张图必须在同一块矩形上做整体平移才严丝合缝；
+                        //  · 涟漪：波前那条半透明细带叠在旧图上，旧图必须**盖满**内孔，
+                        //    否则细带下面露出桌面 → 新图外侧发白（竖屏→横屏尤其明显）。
+                        let prev_bleed = if tf.push || tf.ripple.is_some() {
                             let (tx, ty) = (prev.width() as f64, prev.height() as f64);
                             let sc = (media_rect.width() as f64 / tx)
                                 .max(media_rect.height() as f64 / ty);
@@ -1680,6 +1686,14 @@ mod trans_tests {
             (bands.last().unwrap().2 - 1.0).abs() < 1e-9,
             "最内层必须完全不透明，否则整幅照片发虚"
         );
+        // **只有最外层**可以半透明；其余必须**恰好** 1.0。
+        // 否则半透明的圈层会一直叠在旧图上 → 旧图从整片外侧透出（竖屏→横屏残影）。
+        for (i, (_, _, a)) in bands.iter().enumerate().skip(1) {
+            assert!(
+                (a - 1.0).abs() < 1e-9,
+                "第 {i} 层必须完全不透明（半透明层会留下旧图残影），实际 {a}"
+            );
+        }
         let amps: Vec<f64> = bands.iter().map(|b| (b.1 - 1.0).abs()).collect();
         for w in amps.windows(2) {
             assert!(w[0] > w[1], "圈层幅度必须逐层递减：{w:?}");
