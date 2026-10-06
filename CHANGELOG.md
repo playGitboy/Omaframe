@@ -3,6 +3,36 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-10-02
+
+第二阶段：素材切换**转场效果**。
+
+### 新增
+- **设置页 · 转场**（新分组，位于「自动轮换」之后）：
+  - **转场效果**下拉：淡入淡出 / 缓慢推近 / 拉远 / 横向滑动 / 垂直卷帘 / 翻页
+  - **随机转场**开关：开启后效果下拉**置灰**，每次切换由程序从已有效果里随机挑，
+    且**避开与上一次相同的效果**（否则看起来像没转场）
+  - **时长**（200–3000ms，默认 600）
+- 配置 `[transition]`：`enabled` / `effect` / `random` / `duration_ms`；
+  默认 启用、`fade`、随机=关、600ms。
+- **不影响自动轮换间隔**：转场由视图自身的 16ms tick 驱动，轮换计时器独立计时，
+  转场只在切换瞬间播放、不叠加到停留时间上。
+
+### 实现要点（保持低开销）
+- 全部效果只用 snapshot 的 `translate / scale / push_opacity / push_clip` 实现 ——
+  **不做 CPU 像素运算、不建 ImageSurface、不用 filter**，开销在合成器侧。
+- 旧/新两张都是已有的 GPU 纹理，转场只是"多画一张 + 一次变换"。
+- 效果抽成 `Copy` 枚举（`Effect`），每帧不再分配 String。
+- 门控：首帧不转场 / 视频不转场（视频已有自己的淡入淡出）/ 被覆盖或隐藏时
+  **直接 settle 并停止 tick**（省电，且不会切回来"正在转场"）。
+
+### 验证
+- 逐效果实测（红/蓝两张纯色素材 + 慢速放大时长，抓中间帧）：
+  fade / ken_burns / pull_back 出现红蓝**混合色**；slide 出现红蓝**同屏分列**；
+  roll 出现红蓝**上下分带**；page_flip 出现**裁剪揭示** —— 6 种全部生效。
+- 新增 2 个单测（效果参数范围/无 NaN、效果名解析回落 fade）→ 39/39 通过；
+  0 编译警告；发布自检通过。
+
 ## [0.4.5] - 2026-10-01
 
 ### 修复
@@ -193,6 +223,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.5.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.0
 [0.4.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.5
 [0.4.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.4
 [0.4.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.3

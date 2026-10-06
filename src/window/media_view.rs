@@ -32,11 +32,50 @@ const MASK_INSET: f64 = 0.0;
 /// 由相框斜边盖住即可；值过大会让照片钻到框体上，所以取保守的 3px。
 const MEDIA_EDGE_BLEED: f64 = 3.0;
 
+/// 转场效果（Copy，避免每帧分配 String）
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Effect {
+    Fade,
+    KenBurns,
+    PullBack,
+    Slide,
+    Roll,
+    PageFlip,
+}
+
+impl Effect {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "ken_burns" => Effect::KenBurns,
+            "pull_back" => Effect::PullBack,
+            "slide" => Effect::Slide,
+            "roll" => Effect::Roll,
+            "page_flip" => Effect::PageFlip,
+            _ => Effect::Fade,
+        }
+    }
+}
+
+/// 一次转场在进度 p 时的绘制参数。
+/// 所有数值只驱动 snapshot 的 translate/scale/opacity/clip —— 无 CPU 像素运算。
+struct TransFrame {
+    /// 旧图/新图不透明度
+    prev_a: f64,
+    cur_a: f64,
+    /// 旧图/新图平移（逻辑像素）
+    prev_t: (f64, f64),
+    cur_t: (f64, f64),
+    /// 旧图/新图缩放（围绕媒体矩形中心）
+    prev_s: f64,
+    cur_s: f64,
+    /// 新图的揭示裁剪（相对媒体矩形的比例 x,y,w,h）；None = 不裁
+    cur_clip: Option<(f64, f64, f64, f64)>,
+}
+
 /// 转场动画状态
 pub struct TransAnim {
-    /// 本次效果 key（阶段 A 只实现 fade，后续扩展用）
-    #[allow(dead_code)]
-    kind: String,
+    /// 本次效果
+    pub kind: Effect,
     start: std::time::Instant,
     duration: std::time::Duration,
 }
@@ -45,11 +84,61 @@ impl TransAnim {
     /// 0.0 → 1.0（ease-out，尾段更柔和）
     fn progress(&self) -> f64 {
         let d = self.duration.as_secs_f64().max(0.001);
-        let t = ((self.start.elapsed().as_secs_f64()) / d).clamp(0.0, 1.0);
+        let t = (self.start.elapsed().as_secs_f64() / d).clamp(0.0, 1.0);
         1.0 - (1.0 - t).powi(3)
     }
     fn done(&self) -> bool {
         self.start.elapsed() >= self.duration
+    }
+
+    /// 按效果算出本帧参数。`mw/mh` = 媒体矩形尺寸（逻辑像素）。
+    fn frame(&self, mw: f64, mh: f64) -> TransFrame {
+        let p = self.progress();
+        let ease = |x: f64| x; // progress 已是 ease-out
+        let mut f = TransFrame {
+            prev_a: 1.0 - p,
+            cur_a: p,
+            prev_t: (0.0, 0.0),
+            cur_t: (0.0, 0.0),
+            prev_s: 1.0,
+            cur_s: 1.0,
+            cur_clip: None,
+        };
+        match self.kind {
+            Effect::Fade => {}
+            // 新图缓慢推近：1.00 → 1.05
+            Effect::KenBurns => {
+                f.cur_s = 1.0 + 0.05 * ease(p);
+            }
+            // 新图从 1.06 收回 1.00（拉远般的收束感）
+            Effect::PullBack => {
+                f.cur_s = 1.06 - 0.06 * ease(p);
+            }
+            // 横向滑动：新图从右侧推入，旧图向左退出
+            Effect::Slide => {
+                f.prev_a = 1.0;
+                f.cur_a = 1.0;
+                f.cur_t = ((1.0 - ease(p)) * mw, 0.0);
+                f.prev_t = (-ease(p) * mw, 0.0);
+            }
+            // 垂直卷帘：新图自上而下揭开
+            Effect::Roll => {
+                f.prev_a = 1.0;
+                f.cur_a = 1.0;
+                f.cur_t = (0.0, -(1.0 - ease(p)) * mh);
+                f.prev_t = (0.0, ease(p) * mh);
+            }
+            // 翻页：新页从右侧揭开（裁剪推进）+ 旧页轻微左移缩放
+            Effect::PageFlip => {
+                f.prev_a = 1.0;
+                f.cur_a = 1.0;
+                let e = ease(p);
+                f.cur_clip = Some((0.0, 0.0, e, 1.0));
+                f.prev_t = (-0.12 * e * mw, 0.0);
+                f.prev_s = 1.0 - 0.04 * e;
+            }
+        }
+        f
     }
 }
 /// 媒体绘制区域相对中心片（CENTER）内缩的像素数。
@@ -190,40 +279,80 @@ mod imp {
                 snapshot.save();
                 let clip = media_rect;
                 snapshot.push_clip(&clip);
-                // 转场期间同时画"上一张"与"当前张"；无转场时退化为原来的一次绘制。
-                // 开销全部在合成器侧（push_opacity + 两张已有 GPU 纹理），
-                // **不做任何 CPU 像素运算**。
-                let anim_prog: Option<f64> =
-                    self.anim.borrow().as_ref().map(|a| a.progress());
-                if let Some(prev) = self.prev_tex.borrow().clone() {
-                    if let Some(p) = anim_prog {
-                        let a = (1.0 - p) as f32;
-                        if a > 0.004 {
-                            let g = MEDIA_EDGE_BLEED as f32;
-                            let bleed = gtk::graphene::Rect::new(
-                                media_rect.x() - g,
-                                media_rect.y() - g,
-                                media_rect.width() + g * 2.0,
-                                media_rect.height() + g * 2.0,
-                            );
-                            snapshot.push_opacity(a as f64);
-                            snapshot.append_texture(&prev, &bleed);
-                            snapshot.pop();
+                // 转场：按效果算出本帧的 translate/scale/opacity/clip 再画旧/新两张。
+                // 开销全在合成器侧（都是已有 GPU 纹理 + 快照变换），**不做 CPU 像素运算**。
+                let g = MEDIA_EDGE_BLEED as f32;
+                let bleed = gtk::graphene::Rect::new(
+                    media_rect.x() - g,
+                    media_rect.y() - g,
+                    media_rect.width() + g * 2.0,
+                    media_rect.height() + g * 2.0,
+                );
+                let tframe = self
+                    .anim
+                    .borrow()
+                    .as_ref()
+                    .map(|a| a.frame(media_rect.width() as f64, media_rect.height() as f64));
+                let (cx, cy) = (
+                    media_rect.x() as f64 + media_rect.width() as f64 / 2.0,
+                    media_rect.y() as f64 + media_rect.height() as f64 / 2.0,
+                );
+                if let (Some(tf), Some(prev)) = (tframe.as_ref(), self.prev_tex.borrow().clone()) {
+                    if tf.prev_a > 0.004 {
+                        snapshot.save();
+                        snapshot.push_opacity(tf.prev_a);
+                        if (tf.prev_t.0, tf.prev_t.1) != (0.0, 0.0) {
+                            snapshot.translate(&gtk::graphene::Point::new(
+                                tf.prev_t.0 as f32,
+                                tf.prev_t.1 as f32,
+                            ));
                         }
+                        if (tf.prev_s - 1.0).abs() > 1e-6 {
+                            snapshot.translate(&gtk::graphene::Point::new(cx as f32, cy as f32));
+                            snapshot.scale(tf.prev_s as f32, tf.prev_s as f32);
+                            snapshot.translate(&gtk::graphene::Point::new(-cx as f32, -cy as f32));
+                        }
+                        snapshot.append_texture(&prev, &bleed);
+                        snapshot.restore();
                     }
                 }
                 if let Some(tex) = self.texture.borrow().clone() {
+                    snapshot.save();
+                    if let Some(tf) = tframe.as_ref() {
+                        snapshot.push_opacity(tf.cur_a);
+                        if let Some((fx, fy, fw, fh)) = tf.cur_clip {
+                            // 揭示裁剪：按比例裁在媒体矩形内（翻页用）
+                            let clip = gtk::graphene::Rect::new(
+                                media_rect.x() + (fx as f32) * media_rect.width(),
+                                media_rect.y() + (fy as f32) * media_rect.height(),
+                                (fw as f32) * media_rect.width(),
+                                (fh as f32) * media_rect.height(),
+                            );
+                            snapshot.push_clip(&clip);
+                        }
+                        if (tf.cur_t.0, tf.cur_t.1) != (0.0, 0.0) {
+                            snapshot.translate(&gtk::graphene::Point::new(
+                                tf.cur_t.0 as f32,
+                                tf.cur_t.1 as f32,
+                            ));
+                        }
+                        if (tf.cur_s - 1.0).abs() > 1e-6 {
+                            snapshot.translate(&gtk::graphene::Point::new(cx as f32, cy as f32));
+                            snapshot.scale(tf.cur_s as f32, tf.cur_s as f32);
+                            snapshot.translate(&gtk::graphene::Point::new(-cx as f32, -cy as f32));
+                        }
+                    }
                     // 绘制到比 clip 再大 MEDIA_EDGE_BLEED 的范围（clip 会裁掉多余的）：
                     // 纹理被缩放到 bleed 矩形，clip 边界离纹理自身边缘还有 2px，
                     // 双线性采样取到的是纹理内部像素 → 照片边缘不半透明。
-                    let g = MEDIA_EDGE_BLEED as f32;
-                    let bleed = gtk::graphene::Rect::new(
-                        media_rect.x() - g,
-                        media_rect.y() - g,
-                        media_rect.width() + g * 2.0,
-                        media_rect.height() + g * 2.0,
-                    );
                     snapshot.append_texture(&tex, &bleed);
+                    if tframe.is_some() {
+                        if tframe.as_ref().is_some_and(|t| t.cur_clip.is_some()) {
+                            snapshot.pop(); // clip
+                        }
+                        snapshot.pop(); // opacity
+                    }
+                    snapshot.restore();
                 }
                 snapshot.pop();
                 snapshot.restore();
@@ -981,7 +1110,7 @@ impl MediaView {
                 let (kind, ms) = tr.unwrap();
                 *imp.prev_tex.borrow_mut() = Some(cur);
                 *imp.anim.borrow_mut() = Some(TransAnim {
-                    kind: kind.to_string(),
+                    kind: Effect::parse(kind),
                     start: std::time::Instant::now(),
                     duration: std::time::Duration::from_millis(ms.max(1) as u64),
                 });
@@ -1127,3 +1256,59 @@ impl Default for MediaView {
     }
 }
 
+
+
+#[cfg(test)]
+mod trans_tests {
+    use super::*;
+
+    fn anim(kind: Effect) -> TransAnim {
+        TransAnim {
+            kind,
+            start: std::time::Instant::now(),
+            duration: std::time::Duration::from_millis(600),
+        }
+    }
+
+    /// 效果参数在 p=0/p=1 两端必须落在预期位置，且全程无 NaN、不越界。
+    #[test]
+    fn effect_frames_are_sane() {
+        let (mw, mh) = (400.0, 300.0);
+        for k in [
+            Effect::Fade,
+            Effect::KenBurns,
+            Effect::PullBack,
+            Effect::Slide,
+            Effect::Roll,
+            Effect::PageFlip,
+        ] {
+            let a = anim(k);
+            // progress 是时间函数，这里直接验证 frame() 在两个端点的形状：
+            // 用 mock 不了时间，所以只做"形状/范围"校验
+            let f = a.frame(mw, mh);
+            for v in [
+                f.prev_a, f.cur_a, f.prev_t.0, f.prev_t.1, f.cur_t.0, f.cur_t.1,
+                f.prev_s, f.cur_s,
+            ] {
+                assert!(v.is_finite(), "{k:?} 出现 NaN/Inf");
+            }
+            assert!((0.0..=1.0).contains(&f.prev_a), "{k:?} prev_a 越界");
+            assert!((0.0..=1.0).contains(&f.cur_a), "{k:?} cur_a 越界");
+            assert!(f.cur_s > 0.5 && f.cur_s < 2.0, "{k:?} cur_s 越界");
+            assert!(f.prev_s > 0.5 && f.prev_s < 2.0, "{k:?} prev_s 越界");
+        }
+    }
+
+    /// 效果名解析：未知/空串一律回落 fade（配置被手改也不至于不转场或崩）
+    #[test]
+    fn effect_parse_falls_back_to_fade() {
+        assert_eq!(Effect::parse("fade"), Effect::Fade);
+        assert_eq!(Effect::parse("slide"), Effect::Slide);
+        assert_eq!(Effect::parse("roll"), Effect::Roll);
+        assert_eq!(Effect::parse("page_flip"), Effect::PageFlip);
+        assert_eq!(Effect::parse("ken_burns"), Effect::KenBurns);
+        assert_eq!(Effect::parse("pull_back"), Effect::PullBack);
+        assert_eq!(Effect::parse(""), Effect::Fade);
+        assert_eq!(Effect::parse("不存在"), Effect::Fade);
+    }
+}

@@ -630,6 +630,82 @@ fn build(state: &Rc<AppState>) -> Panel {
     g_general.add(&auto_start_row);
     // 顺序：媒体 → 显示 → 自动轮换 → 视频 → 相框 → 常规
     // （「相框」是用户最常调的，放前面；「常规」放最后）
+    // ---------------- 转场 ----------------
+    // 放在「自动轮换」之后：转场是切换时的呈现效果，与轮换相邻最直观。
+    {
+        let g_tr = adw::PreferencesGroup::builder()
+            .title("转场")
+            .description("切换素材时的过渡效果")
+            .build();
+
+        // 转场效果下拉
+        let labels: Vec<&str> = crate::config::TRANSITION_EFFECTS.iter().map(|(_, n)| *n).collect();
+        let keys: Vec<&str> = crate::config::TRANSITION_EFFECTS.iter().map(|(k, _)| *k).collect();
+        let cur = state.config.borrow().transition.effect.clone();
+        let combo = adw::ComboRow::builder()
+            .title("转场效果")
+            .model(&gtk::StringList::new(&labels))
+            .build();
+        if let Some(i) = keys.iter().position(|k| *k == cur) {
+            combo.set_selected(i as u32);
+        }
+        g_tr.add(&combo);
+
+        // 随机转场：开启则每次切换随机挑一种 → 效果下拉置灰
+        let random_row = switch_row(
+            "随机转场",
+            state.clone(),
+            |c| c.transition.random,
+            |c, v| c.transition.random = v,
+        );
+        g_tr.add(&random_row);
+
+        // 时长（不叠加到轮换间隔：转场只在切换瞬间播放）
+        g_tr.add(&spin_row(
+            "时长（毫秒）",
+            200,
+            3000,
+            100,
+            state.clone(),
+            |c| c.transition.duration_ms as i32,
+            |c, v| c.transition.duration_ms = v.max(0) as u32,
+        ));
+
+        // 联动：随机开 → 效果下拉置灰并提示
+        let sync = {
+            let combo = combo.clone();
+            let st = state.clone();
+            move || {
+                let random = st.config.borrow().transition.random;
+                combo.set_sensitive(!random);
+                combo.set_subtitle(if random {
+                    "已开启「随机转场」，每次切换由程序随机挑选"
+                } else {
+                    ""
+                });
+            }
+        };
+        sync();
+        random_row.connect_active_notify({
+            let sync = sync.clone();
+            move |_| sync()
+        });
+
+        // 选中即写配置。转场参数是**切换那一刻**才读取的，所以改完不需要
+        // apply_settings()（那会连带 show_current + load_frame，属于过重的副作用）。
+        let st = state.clone();
+        let names = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        combo.connect_selected_notify(move |row| {
+            let i = row.selected() as usize;
+            if let Some(k) = names.get(i) {
+                let k = k.clone();
+                st.update(|c| c.transition.effect = k);
+            }
+        });
+
+        page.add(&g_tr);
+    }
+
     page.add(&g_frame);
     page.add(&g_general);
 
