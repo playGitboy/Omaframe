@@ -39,6 +39,8 @@ pub struct MediaPlayer {
     video: RefCell<Option<Rc<crate::media::video::VideoPlayer>>>,
     /// 当前是否是视频（决定控制层按钮语义与轮换行为）
     current_is_video: Cell<bool>,
+    /// 下一帧是**本段视频的首帧**（只有首帧才允许起转场）
+    video_first_frame: Cell<bool>,
     /// 拖动起点快照：Move = (x, y)，Resize = (max_w, max_h, 宽高比)
     drag: RefCell<DragState>,
 }
@@ -116,6 +118,7 @@ impl MediaPlayer {
             shown_once: std::cell::Cell::new(false),
             auto_pick_memo: RefCell::new(None),
             current_is_video: Cell::new(false),
+            video_first_frame: Cell::new(false),
             drag: RefCell::new(DragState::default()),
         });
 
@@ -391,7 +394,11 @@ impl MediaPlayer {
                 }
                 self.show_image(&item)
             }
-            MediaKind::Video => self.show_video(&item),
+            MediaKind::Video => {
+            // 标记"下一帧是首帧"：转场只能在首帧启动（等解码出画才有"新画面"）
+            self.video_first_frame.set(true);
+            self.show_video(&item)
+        }
         }
         // 控制层按钮图标跟随状态
         if let Some(w) = self.state.window() {
@@ -470,7 +477,20 @@ impl MediaPlayer {
         }
         // 首次拿到视频帧尺寸 → 按方向自动选默认相框（style 为空时）
         self.auto_pick_frame_style(_w, _h);
-        window.view.set_video_frame(Some(tex));
+        // 首帧：带上转场（图片→视频 也能有转场）；之后每帧只更新画面
+        let tr = if self.video_first_frame.replace(false) {
+            if self.state.config.borrow().transition.apply_to_video {
+                self.transition_for_apply()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        match tr.as_ref() {
+            Some((kind, ms)) => window.view.set_video_frame_first(Some(tex), Some((kind, *ms))),
+            None => window.view.set_video_frame(Some(tex)),
+        }
         // 首摆放按画布尺寸估算；真实相框尺寸随素材比例到达后才准 → 持续跟随贴靠，
         // 直到用户自己拖动过（那时才交还控制权）。
         if self.autoplaced.get() {

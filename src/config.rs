@@ -171,6 +171,9 @@ pub struct TransitionConfig {
     /// 单次转场时长（毫秒）。**不叠加到自动轮换间隔上**：
     /// 转场只在切换瞬间播放，轮换计时器按原计划走。
     pub duration_ms: u32,
+    /// 转场是否也应用于**视频**（含 图片↔视频 / 视频↔视频）。
+    /// 关掉即回到旧行为（视频不转场）。
+    pub apply_to_video: bool,
 }
 
 impl Default for TransitionConfig {
@@ -180,6 +183,7 @@ impl Default for TransitionConfig {
             effect: "fade".to_string(),
             random: false,
             duration_ms: 1000,
+            apply_to_video: true,
         }
     }
 }

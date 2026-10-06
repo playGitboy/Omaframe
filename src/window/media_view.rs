@@ -1442,10 +1442,42 @@ impl MediaView {
         }
     }
 
+    /// 视频帧。**不再结束转场**：转场期间视频帧会持续更新"新画面"那一侧
+    /// （转场画的就是 `self.texture`），这正是视频能参与转场的关键。
     pub fn set_video_frame(&self, texture: Option<gdk::Texture>) {
-        // 视频走自己的帧管线，**不做转场**（视频自身已有淡入淡出，叠加会脏）
-        self.settle_transition();
         *self.imp().texture.borrow_mut() = texture;
+        self.queue_draw();
+    }
+
+    /// 视频**首帧**：可以带一个转场。
+    ///
+    /// 为什么挂在首帧而不是"决定播视频"的那一刻：视频解码有延迟，
+    /// 那时新纹理还不存在。等首帧到达再启动 → 解码期间旧图一直显示，
+    /// 转场时长也不会被解码时间吃掉。
+    pub fn set_video_frame_first(&self, texture: Option<gdk::Texture>, tr: Option<(&str, u32)>) {
+        let imp = self.imp();
+        // 首帧到达前 self.texture 仍是**上一个素材**（图片或上一段视频的末帧）→ 正好当"上一张"
+        if let Some((kind, ms)) = tr {
+            if imp.trans_allowed.get() && imp.anim.borrow().is_none() {
+                if let Some(cur) = imp.texture.borrow().clone() {
+                    *imp.prev_tex.borrow_mut() = Some(cur);
+                    *imp.prev_rect.borrow_mut() = Some(imp.media_rect.get());
+                    *imp.anim.borrow_mut() = Some(TransAnim {
+                        kind: Effect::parse(kind),
+                        ripple_c: random_drop_point(),
+                        start: std::time::Instant::now(),
+                        duration: std::time::Duration::from_millis(ms.max(1) as u64),
+                    });
+                    imp.anim_gen.set(imp.anim_gen.get().wrapping_add(1));
+                    crate::debug!("转场开始（视频首帧）：{kind} {ms}ms");
+                    self.start_anim_tick();
+                }
+            }
+        } else {
+            // 不转场时保持干净（可能残留着上一次的动画状态）
+            self.settle_transition();
+        }
+        *imp.texture.borrow_mut() = texture;
         self.queue_draw();
     }
 

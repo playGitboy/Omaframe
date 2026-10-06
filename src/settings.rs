@@ -681,6 +681,16 @@ fn build(state: &Rc<AppState>) -> Panel {
         );
         g_tr.add(&dur_row);
 
+        // 视频是否也应用转场（关掉即回到旧行为：视频不转场）
+        let vid_row = switch_row(
+            "视频也应用转场",
+            state.clone(),
+            |c| c.transition.apply_to_video,
+            |c, v| c.transition.apply_to_video = v,
+        );
+        vid_row.set_subtitle("图片↔视频、视频↔视频 切换时同样播放转场；关闭则视频直接切换");
+        g_tr.add(&vid_row);
+
         // 联动：
         //   总开关关 → 效果/随机/时长 三行全部置灰
         //   随机开   → 效果下拉置灰并提示（时长仍可调）

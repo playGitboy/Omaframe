@@ -3,6 +3,32 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-10-06
+
+### 新增：转场也适用于视频（最小版本）
+图片↔视频、视频↔视频 切换现在同样播放转场（默认开启）。
+设置页「转场」组新增 **「视频也应用转场」** 开关，关掉即回到旧行为。
+
+实现（3 处）
+1. `set_video_frame()` **不再每帧 `settle_transition()`**。
+   原来它每帧都杀掉转场（30fps），这才是视频不能转场的根因。
+   现在视频帧只更新画面 —— 而转场画的"新画面"那一侧本来就是 `self.texture`，
+   所以视频帧会**自动**成为转场的新画面，不需要额外管道。
+2. 新增 `set_video_frame_first()`：视频**首帧**才启动转场。
+   挂首帧而不是"决定播视频"那一刻 —— 视频解码有延迟，那时新纹理还不存在；
+   等首帧到达再启动，解码期间旧图一直显示，转场时长也不会被解码时间吃掉。
+3. `player.rs` 新增 `video_first_frame` 标记，在 `show_current()` 选到视频时置位，
+   首帧消费后清零；并受新配置 `transition.apply_to_video` 控制。
+
+配置新增 `[transition] apply_to_video = true`（`#[serde(default)]` 保证旧配置正常加载）。
+
+### 已知取舍（最小版本有意不做）
+- 视频目前**跟随全局效果**。若全局选了「水滴涟漪」，视频首帧也会画 4 层圈层 +
+  cairo 描边（GPU 仍很便宜，但绘制量是普通效果的约 5 倍）。若实测卡顿，
+  下一步再给视频单独一个效果项（`video_effect`）。
+
+45/45 测试通过、0 编译警告。
+
 ## [0.6.6] - 2026-10-06
 
 ### 调参
@@ -472,6 +498,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.7.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.7.0
 [0.6.6]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.6
 [0.6.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.5
 [0.6.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.4
