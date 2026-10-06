@@ -3,6 +3,28 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.2] - 2026-10-06
+
+### 修复：改了设置页但界面没变（运行的是旧二进制）
+上一轮的重排提交后，重启命令写成了
+`systemctl --user restart ... || { make install; make restart-running; }` ——
+`systemctl restart` **成功了**，所以 `||` 后面的 **`make install` 从未执行**，
+服务重启的仍是旧的已安装二进制 → 界面上看不到任何变化。
+（服务与 `make install` 操作的是同一个文件 `~/.local/bin/omaframe`，
+正确顺序必须是**先 install、再 restart 服务**。）
+
+### 进一步紧凑：合并分组
+「尺寸」（最大宽高 / 外扩）与「桌面位置」（桌面显示 / 位置 / 边距）本来就是同一件事
+——"相框怎么摆"，合并为 **「尺寸与位置」**（分组数 10 → 9）。
+
+实现上**不搬任何行的创建代码**：让 `g_pos` 直接复用 `g_display` 这个 GObject
+（`clone()` 是引用计数而非深拷贝），因此只改两行 —— 把 `g_display` 的标题改掉、
+去掉一次 `page.add(&g_pos)` 即可。这类"移动行"的重构最容易出错，能绕开就绕开。
+
+新顺序：媒体 → 轮换 → 视频 → 转场 → 相框 → **尺寸与位置** → 常规 → 项目主页 → 退出
+
+46/46 测试通过、0 编译警告。
+
 ## [0.8.1] - 2026-10-06
 
 ### 设置页重构（分组顺序与命名）
@@ -588,6 +610,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.8.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.2
 [0.8.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.1
 [0.8.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.0
 [0.7.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.7.2

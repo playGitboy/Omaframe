@@ -435,7 +435,7 @@ fn build(state: &Rc<AppState>) -> Panel {
 
     // ---------------- 显示 ----------------
     let g_display = adw::PreferencesGroup::builder()
-        .title("尺寸")
+        .title("尺寸与位置")
         .description("宽高是“保持比例的最大允许尺寸”，不会拉伸变形")
         .build();
 
@@ -754,7 +754,9 @@ fn build(state: &Rc<AppState>) -> Panel {
     page.add(&g_display);
 
     // ---------------- 位置 ----------------
-    let g_pos = adw::PreferencesGroup::builder().title("桌面位置").build();
+    // 「尺寸」与「桌面位置」同属"相框怎么摆" → **复用同一个 GObject** 合成一组
+    // （clone 是 GObject 引用计数，不是深拷贝），这样只需改动两行、不用搬任何行的创建代码。
+    let g_pos = g_display.clone();
     // 桌面显示：显示/隐藏桌面上的相框（媒体与设置照常工作）
     {
         let row = adw::SwitchRow::new();
@@ -771,7 +773,6 @@ fn build(state: &Rc<AppState>) -> Panel {
         });
         g_pos.add(&row);
     }
-    page.add(&g_pos);
     page.add(&g_general);
 
     // ---------------- 项目链接 ----------------
