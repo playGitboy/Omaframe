@@ -3,6 +3,26 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.1] - 2026-10-02
+
+### 新增
+- 设置页 · 转场 · **启用转场**开关（总开关）。关闭后效果/随机/时长三行**一并置灰**；
+  随机开启时仅效果下拉置灰（时长仍可调）。
+
+### 改进
+- 转场效果参数细化（都仍是 snapshot 变换，开销不变）：
+  - `page_flip` 从"擦除"改为**真翻页感**：旧页以**左边缘为轴横向压扁**（掀起来），
+    新页自左向右揭开。为此给变换参数加了**非等比缩放（x/y 分开）+ 缩放锚点**。
+  - `ken_burns`：旧图同时继续放大淡出、新图从略大收回 1.0 → 画面像"持续靠近"。
+  - `pull_back`：旧图略缩、新图从更大处收回 → 收束感更强。
+- 新增单测：推动类效果必须"整屏推"（两端只看到一张图、中间不留背景空档）；
+  并把参数校验扩展到缩放/锚点/裁剪范围。
+
+### 验证
+- 40/40 测试通过、0 编译警告。
+- 6 种效果的**端到端渲染**在 0.5.0 已实测确认（红蓝素材混合色/同屏分列/上下分带/
+  裁剪揭示）；本版的参数细化由单测锁定其范围与不变量。
+
 ## [0.5.0] - 2026-10-02
 
 第二阶段：素材切换**转场效果**。
@@ -223,6 +243,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.5.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.1
 [0.5.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.0
 [0.4.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.5
 [0.4.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.4

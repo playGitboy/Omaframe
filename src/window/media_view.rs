@@ -65,9 +65,13 @@ struct TransFrame {
     /// 旧图/新图平移（逻辑像素）
     prev_t: (f64, f64),
     cur_t: (f64, f64),
-    /// 旧图/新图缩放（围绕媒体矩形中心）
-    prev_s: f64,
-    cur_s: f64,
+    /// 旧图/新图缩放（x,y 分开：翻页需要只压 x）
+    prev_s: (f64, f64),
+    cur_s: (f64, f64),
+    /// 缩放锚点（媒体矩形的比例位置；0,0 = 左上，0.5,0.5 = 中心）
+    /// 翻页要挂在**左边缘**压缩才像掀页
+    prev_anchor: (f64, f64),
+    cur_anchor: (f64, f64),
     /// 新图的揭示裁剪（相对媒体矩形的比例 x,y,w,h）；None = 不裁
     cur_clip: Option<(f64, f64, f64, f64)>,
 }
@@ -94,48 +98,51 @@ impl TransAnim {
     /// 按效果算出本帧参数。`mw/mh` = 媒体矩形尺寸（逻辑像素）。
     fn frame(&self, mw: f64, mh: f64) -> TransFrame {
         let p = self.progress();
-        let ease = |x: f64| x; // progress 已是 ease-out
         let mut f = TransFrame {
             prev_a: 1.0 - p,
             cur_a: p,
             prev_t: (0.0, 0.0),
             cur_t: (0.0, 0.0),
-            prev_s: 1.0,
-            cur_s: 1.0,
+            prev_s: (1.0, 1.0),
+            cur_s: (1.0, 1.0),
+            prev_anchor: (0.5, 0.5),
+            cur_anchor: (0.5, 0.5),
             cur_clip: None,
         };
         match self.kind {
+            // 纯淡入淡出：最贴合"回忆"的克制感，也最省
             Effect::Fade => {}
-            // 新图缓慢推近：1.00 → 1.05
+            // 缓慢推近：旧图继续放大淡出、新图从略大收回 1.0 → 画面像"持续在靠近"
             Effect::KenBurns => {
-                f.cur_s = 1.0 + 0.05 * ease(p);
+                f.prev_s = (1.0 + 0.04 * p, 1.0 + 0.04 * p);
+                f.cur_s = (1.06 - 0.06 * p, 1.06 - 0.06 * p);
             }
-            // 新图从 1.06 收回 1.00（拉远般的收束感）
+            // 拉远：新图从更大处收回，旧图略缩 → 收束感
             Effect::PullBack => {
-                f.cur_s = 1.06 - 0.06 * ease(p);
+                f.prev_s = (1.0 - 0.03 * p, 1.0 - 0.03 * p);
+                f.cur_s = (1.10 - 0.10 * p, 1.10 - 0.10 * p);
             }
-            // 横向滑动：新图从右侧推入，旧图向左退出
+            // 横向推动：旧图左退、新图右入（整屏推，无空隙）
             Effect::Slide => {
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
-                f.cur_t = ((1.0 - ease(p)) * mw, 0.0);
-                f.prev_t = (-ease(p) * mw, 0.0);
+                f.cur_t = ((1.0 - p) * mw, 0.0);
+                f.prev_t = (-p * mw, 0.0);
             }
-            // 垂直卷帘：新图自上而下揭开
+            // 垂直卷帘：新图自上而下揭开，旧图下移
             Effect::Roll => {
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
-                f.cur_t = (0.0, -(1.0 - ease(p)) * mh);
-                f.prev_t = (0.0, ease(p) * mh);
+                f.cur_t = (0.0, -(1.0 - p) * mh);
+                f.prev_t = (0.0, p * mh);
             }
-            // 翻页：新页从右侧揭开（裁剪推进）+ 旧页轻微左移缩放
+            // 翻页：旧页以**左边缘**为轴横向压扁（掀起来），新页自左向右揭开
             Effect::PageFlip => {
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
-                let e = ease(p);
-                f.cur_clip = Some((0.0, 0.0, e, 1.0));
-                f.prev_t = (-0.12 * e * mw, 0.0);
-                f.prev_s = 1.0 - 0.04 * e;
+                f.prev_anchor = (0.0, 0.5);
+                f.prev_s = (1.0 - p, 1.0);
+                f.cur_clip = Some((0.0, 0.0, p, 1.0));
             }
         }
         f
@@ -293,10 +300,6 @@ mod imp {
                     .borrow()
                     .as_ref()
                     .map(|a| a.frame(media_rect.width() as f64, media_rect.height() as f64));
-                let (cx, cy) = (
-                    media_rect.x() as f64 + media_rect.width() as f64 / 2.0,
-                    media_rect.y() as f64 + media_rect.height() as f64 / 2.0,
-                );
                 if let (Some(tf), Some(prev)) = (tframe.as_ref(), self.prev_tex.borrow().clone()) {
                     if tf.prev_a > 0.004 {
                         snapshot.save();
@@ -307,10 +310,12 @@ mod imp {
                                 tf.prev_t.1 as f32,
                             ));
                         }
-                        if (tf.prev_s - 1.0).abs() > 1e-6 {
-                            snapshot.translate(&gtk::graphene::Point::new(cx as f32, cy as f32));
-                            snapshot.scale(tf.prev_s as f32, tf.prev_s as f32);
-                            snapshot.translate(&gtk::graphene::Point::new(-cx as f32, -cy as f32));
+                        if (tf.prev_s.0 - 1.0).abs() > 1e-6 || (tf.prev_s.1 - 1.0).abs() > 1e-6 {
+                            let ax = media_rect.x() as f64 + tf.prev_anchor.0 * media_rect.width() as f64;
+                            let ay = media_rect.y() as f64 + tf.prev_anchor.1 * media_rect.height() as f64;
+                            snapshot.translate(&gtk::graphene::Point::new(ax as f32, ay as f32));
+                            snapshot.scale(tf.prev_s.0 as f32, tf.prev_s.1 as f32);
+                            snapshot.translate(&gtk::graphene::Point::new(-ax as f32, -ay as f32));
                         }
                         snapshot.append_texture(&prev, &bleed);
                         snapshot.restore();
@@ -336,10 +341,12 @@ mod imp {
                                 tf.cur_t.1 as f32,
                             ));
                         }
-                        if (tf.cur_s - 1.0).abs() > 1e-6 {
-                            snapshot.translate(&gtk::graphene::Point::new(cx as f32, cy as f32));
-                            snapshot.scale(tf.cur_s as f32, tf.cur_s as f32);
-                            snapshot.translate(&gtk::graphene::Point::new(-cx as f32, -cy as f32));
+                        if (tf.cur_s.0 - 1.0).abs() > 1e-6 || (tf.cur_s.1 - 1.0).abs() > 1e-6 {
+                            let ax = media_rect.x() as f64 + tf.cur_anchor.0 * media_rect.width() as f64;
+                            let ay = media_rect.y() as f64 + tf.cur_anchor.1 * media_rect.height() as f64;
+                            snapshot.translate(&gtk::graphene::Point::new(ax as f32, ay as f32));
+                            snapshot.scale(tf.cur_s.0 as f32, tf.cur_s.1 as f32);
+                            snapshot.translate(&gtk::graphene::Point::new(-ax as f32, -ay as f32));
                         }
                     }
                     // 绘制到比 clip 再大 MEDIA_EDGE_BLEED 的范围（clip 会裁掉多余的）：
@@ -1286,17 +1293,32 @@ mod trans_tests {
             // progress 是时间函数，这里直接验证 frame() 在两个端点的形状：
             // 用 mock 不了时间，所以只做"形状/范围"校验
             let f = a.frame(mw, mh);
-            for v in [
+            let nums = [
                 f.prev_a, f.cur_a, f.prev_t.0, f.prev_t.1, f.cur_t.0, f.cur_t.1,
-                f.prev_s, f.cur_s,
-            ] {
+                f.prev_s.0, f.prev_s.1, f.cur_s.0, f.cur_s.1,
+                f.prev_anchor.0, f.prev_anchor.1, f.cur_anchor.0, f.cur_anchor.1,
+            ];
+            for v in nums {
                 assert!(v.is_finite(), "{k:?} 出现 NaN/Inf");
             }
             assert!((0.0..=1.0).contains(&f.prev_a), "{k:?} prev_a 越界");
             assert!((0.0..=1.0).contains(&f.cur_a), "{k:?} cur_a 越界");
-            assert!(f.cur_s > 0.5 && f.cur_s < 2.0, "{k:?} cur_s 越界");
-            assert!(f.prev_s > 0.5 && f.prev_s < 2.0, "{k:?} prev_s 越界");
-        }
+            for s_ in [f.prev_s.0, f.prev_s.1, f.cur_s.0, f.cur_s.1] {
+                assert!(s_ > 0.5 && s_ < 2.0, "{k:?} 缩放越界 {s_}");
+            }
+            for a in [f.prev_anchor.0, f.prev_anchor.1, f.cur_anchor.0, f.cur_anchor.1] {
+                assert!((0.0..=1.0).contains(&a), "{k:?} 锚点越界");
+            }
+            if let Some((x, y, w, h)) = f.cur_clip {
+                assert!(
+                    (0.0..=1.0).contains(&x)
+                        && (0.0..=1.0).contains(&y)
+                        && (0.0..=1.0).contains(&w)
+                        && (0.0..=1.0).contains(&h),
+                    "{k:?} 裁剪越界"
+                );
+            }
+    }
     }
 
     /// 效果名解析：未知/空串一律回落 fade（配置被手改也不至于不转场或崩）
@@ -1310,5 +1332,22 @@ mod trans_tests {
         assert_eq!(Effect::parse("pull_back"), Effect::PullBack);
         assert_eq!(Effect::parse(""), Effect::Fade);
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
+    }
+
+    /// 推动类效果在两端必须"整屏推"：起点只看得到旧图、终点只看得到新图，
+    /// 中间不许出现"两边都露背景"的空档（否则会闪一条背景）。
+    #[test]
+    fn effect_slide_and_roll_push_full_width() {
+        let (mw, mh) = (400.0, 300.0);
+        for k in [Effect::Slide, Effect::Roll] {
+            let f = anim(k).frame(mw, mh);
+            assert!((f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9);
+            // 横向效果：位移在 x 轴上；纵向效果：位移在 y 轴上（另一个为 0）
+            if k == Effect::Slide {
+                assert!(f.cur_t.1 == 0.0 && f.prev_t.1 == 0.0);
+            } else {
+                assert!(f.cur_t.0 == 0.0 && f.prev_t.0 == 0.0);
+            }
+        }
     }
 }

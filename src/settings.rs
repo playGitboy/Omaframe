@@ -638,6 +638,15 @@ fn build(state: &Rc<AppState>) -> Panel {
             .description("切换素材时的过渡效果")
             .build();
 
+        // 总开关：关掉后不转场（效果/随机/时长三行一并置灰）
+        let enable_row = switch_row(
+            "启用转场",
+            state.clone(),
+            |c| c.transition.enabled,
+            |c, v| c.transition.enabled = v,
+        );
+        g_tr.add(&enable_row);
+
         // 转场效果下拉
         let labels: Vec<&str> = crate::config::TRANSITION_EFFECTS.iter().map(|(_, n)| *n).collect();
         let keys: Vec<&str> = crate::config::TRANSITION_EFFECTS.iter().map(|(k, _)| *k).collect();
@@ -661,7 +670,7 @@ fn build(state: &Rc<AppState>) -> Panel {
         g_tr.add(&random_row);
 
         // 时长（不叠加到轮换间隔：转场只在切换瞬间播放）
-        g_tr.add(&spin_row(
+        let dur_row = spin_row(
             "时长（毫秒）",
             200,
             3000,
@@ -669,24 +678,41 @@ fn build(state: &Rc<AppState>) -> Panel {
             state.clone(),
             |c| c.transition.duration_ms as i32,
             |c, v| c.transition.duration_ms = v.max(0) as u32,
-        ));
+        );
+        g_tr.add(&dur_row);
 
-        // 联动：随机开 → 效果下拉置灰并提示
+        // 联动：
+        //   总开关关 → 效果/随机/时长 三行全部置灰
+        //   随机开   → 效果下拉置灰并提示（时长仍可调）
         let sync = {
             let combo = combo.clone();
+            let random_row = random_row.clone();
+            let dur_row = dur_row.clone();
             let st = state.clone();
             move || {
-                let random = st.config.borrow().transition.random;
-                combo.set_sensitive(!random);
-                combo.set_subtitle(if random {
-                    "已开启「随机转场」，每次切换由程序随机挑选"
+                let (en, random) = {
+                    let c = st.config.borrow();
+                    (c.transition.enabled, c.transition.random)
+                };
+                random_row.set_sensitive(en);
+                dur_row.set_sensitive(en);
+                combo.set_sensitive(en && !random);
+                let sub = if !en {
+                    "已关闭转场".to_string()
+                } else if random {
+                    "已开启「随机转场」，每次切换由程序随机挑选".to_string()
                 } else {
-                    ""
-                });
+                    String::new()
+                };
+                combo.set_subtitle(&sub);
             }
         };
         sync();
         random_row.connect_active_notify({
+            let sync = sync.clone();
+            move |_| sync()
+        });
+        enable_row.connect_active_notify({
             let sync = sync.clone();
             move |_| sync()
         });
