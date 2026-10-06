@@ -99,9 +99,13 @@ struct RippleGeo {
 /// 涟漪圈层数：把新图分成这么多同心圈层分别绘制，层与层之间错位 → 水面波动。
 const RIPPLE_BANDS: usize = 5;
 /// 每层的相对位移幅度（0.016 = 1.6%）。太大会变成"图像撕裂"，太小则看不出水感。
-const RIPPLE_AMP: f64 = 0.016;
+const RIPPLE_AMP: f64 = 0.022;
 /// 圈层间距（波前半径的比例）：越大层越宽、断层越少越柔和
 const RIPPLE_BAND_GAP: f64 = 0.16;
+/// 波前亮环上的起伏个数（"浪头"有多碎）
+const RIPPLE_WAVES: f64 = 5.0;
+/// 波前起伏幅度（半径的比例）—— 越大波前越"浪"
+const RIPPLE_WAVE_AMP: f64 = 0.05;
 
 /// 涟漪圈层：`(半径系数, 缩放系数)`，半径是**波前半径的比例**。
 /// 由大到小绘制、后画的盖住先画的 → 每层只露出自己那一圈（正好是圆环带），
@@ -123,7 +127,7 @@ fn ripple_bands(rf: &RippleGeo) -> Vec<(f64, f64, f64)> {
             let amp = RIPPLE_AMP * 0.6f64.powi(k as i32) * sign;
             // **最外层半透明**：波前是"半透的浪头"，透过它还能看到旧图
             // → 新旧交界不再是一条硬边；往里逐层加深，约第 4 层全不透明。
-            let alpha = (0.35 + 0.22 * k as f64).min(1.0);
+            let alpha = (0.25 + 0.22 * k as f64).min(1.0);
             Some((rk, 1.0 + amp, alpha))
         })
         .collect()
@@ -549,9 +553,7 @@ mod imp {
                         // 环**不做成正圆**：半径按正弦起伏（相位随扩散旋转）→ 波前是
                         // "扭动的浪头"而不是几何圆，涟漪感才出来。
                         let phase = rf.p * std::f64::consts::TAU * 1.5;
-                        const WAVES: f64 = 7.0; // 环上一圈 7 个起伏
-                        const WAMP: f64 = 0.03; // 起伏幅度（半径的 3%）
-                        const SEG: usize = 144;
+                        const SEG: usize = 144; // 折线精度（够密就看不出多边形）
                         for (r, a, w) in rings {
                             if r < 2.0 {
                                 continue;
@@ -560,7 +562,8 @@ mod imp {
                             cr.set_source_rgba(1.0, 1.0, 1.0, a);
                             for i in 0..=SEG {
                                 let th = i as f64 / SEG as f64 * std::f64::consts::TAU;
-                                let rr = r * (1.0 + WAMP * (th * WAVES + phase).sin());
+                                let rr =
+                                    r * (1.0 + RIPPLE_WAVE_AMP * (th * RIPPLE_WAVES + phase).sin());
                                 let (px, py) = (cx + rr * th.cos(), cy + rr * th.sin());
                                 if i == 0 {
                                     cr.move_to(px, py);

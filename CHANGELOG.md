@@ -3,6 +3,21 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.4] - 2026-10-06
+
+### 调参（按用户实测手感）
+| 旋钮 | 原值 | 现值 | 作用 |
+|---|---|---|---|
+| `RIPPLE_AMP` | 0.016 | **0.022** | 圈层错位幅度 → 水感更强 |
+| 圈层不透明度起点 | 0.35 | **0.25** | 波前更透 → 新旧交界更柔 |
+| `RIPPLE_WAVE_AMP` | 0.03 | **0.05** | 波前起伏更大 → 更"浪" |
+| `RIPPLE_WAVES` | 7 | **5** | 起伏更少更大 → 不那么碎 |
+
+同时把这四个旋钮**统一提到模块级常量**（原来有两个藏在绘制函数里），
+以后调参不用翻绘制代码。
+
+44/44 测试连跑 3 次稳定、0 编译警告。
+
 ## [0.6.3] - 2026-10-06
 
 ### 优化：波前改成"半透明的浪头"，并且会扭动
@@ -427,6 +442,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.6.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.4
 [0.6.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.3
 [0.6.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.2
 [0.6.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.1
