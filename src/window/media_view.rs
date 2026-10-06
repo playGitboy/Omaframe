@@ -96,6 +96,36 @@ struct RippleGeo {
     cy: f64,
 }
 
+/// 涟漪圈层数：把新图分成这么多同心圈层分别绘制，层与层之间错位 → 水面波动。
+const RIPPLE_BANDS: usize = 5;
+/// 每层的相对位移幅度（0.016 = 1.6%）。太大会变成"图像撕裂"，太小则看不出水感。
+const RIPPLE_AMP: f64 = 0.016;
+/// 圈层间距（波前半径的比例）：越大层越宽、断层越少越柔和
+const RIPPLE_BAND_GAP: f64 = 0.16;
+
+/// 涟漪圈层：`(半径系数, 缩放系数)`，半径是**波前半径的比例**。
+/// 由大到小绘制、后画的盖住先画的 → 每层只露出自己那一圈（正好是圆环带），
+/// 于是相邻圈层因为缩放不同而在交界处错位 —— 这就是"水面波动/折光"的观感来源。
+/// 相位交替（±）幅度递减（0.6^k），像真实水波一圈波峰一圈波谷。
+/// 抽成纯函数是为了能被单测覆盖（绘制代码本身单测不到）。
+fn ripple_bands(rf: &RippleGeo) -> Vec<(f64, f64)> {
+    (0..RIPPLE_BANDS)
+        .filter_map(|k| {
+            let rk = 1.0 - RIPPLE_BAND_GAP * k as f64;
+            if rk <= 0.0 {
+                return None;
+            }
+            // 半径太小时层就挤在一起了（刚起步），直接跳过
+            if rf.r * rk < 1.0 {
+                return None;
+            }
+            let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let amp = RIPPLE_AMP * 0.6f64.powi(k as i32) * sign;
+            Some((rk, 1.0 + amp))
+        })
+        .collect()
+}
+
 /// 涟漪的环：`(相位延迟, 线宽, 亮度)`。
 /// **相位必须错开**：每圈在不同时刻离开落点，才会同时看到"多圈在不同半径上"；
 /// 若都挂在同一半径上（比如 ×1.0 / ×0.94 / ×0.88），看起来只是一条粗环。
@@ -436,65 +466,67 @@ mod imp {
                 }
                 if let Some(tex) = self.texture.borrow().clone() {
                     snapshot.save();
-                    // 涟漪的圆形裁剪是否真的压栈了 —— push 与 pop 必须用**同一个判定**，
-                    // 否则栈失衡（多 pop 会弹掉 opacity 组 → 相框/遮罩被吞）。
-                    // 所以在这里算一次圆形裁剪的几何，push 用它、pop 只看它是否为 Some。
-                    let ripple_circle: Option<(f64, f64, f64)> =
-                        tframe.as_ref().and_then(|t| t.ripple).and_then(|rf| {
-                            let (mwf, mhf) =
-                                (media_rect.width() as f64, media_rect.height() as f64);
-                            let reach = ((mwf * 0.5).powi(2) + (mhf * 0.5).powi(2)).sqrt();
-                            // 半径 ≥ 到四角的距离时**不再裁剪**：p→1 时圆角裁剪的
-                            // 量化误差会在四角留下细缝，露出旧图。
-                            if rf.r < reach {
-                                Some((
-                                    media_rect.x() as f64 + rf.cx * mwf,
-                                    media_rect.y() as f64 + rf.cy * mhf,
-                                    rf.r.max(0.0),
-                                ))
-                            } else {
-                                None
-                            }
-                        });
                     if let Some(tf) = tframe.as_ref() {
                         snapshot.push_opacity(tf.cur_a);
-                        // 涟漪：把新图**裁在扩散的圆里**（push_rounded_clip 的圆角取半宽
-                        // 就是一个正圆）
-                        if let Some((cx, cy, r)) = ripple_circle {
-                            let r = r as f32;
-                            let bounds = gtk::graphene::Rect::new(
-                                cx as f32 - r,
-                                cy as f32 - r,
-                                r * 2.0,
-                                r * 2.0,
-                            );
-                            snapshot.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(
-                                bounds, r,
-                            ));
-                        }
-                        if (tf.cur_t.0, tf.cur_t.1) != (0.0, 0.0) {
-                            snapshot.translate(&gtk::graphene::Point::new(
-                                tf.cur_t.0 as f32,
-                                tf.cur_t.1 as f32,
-                            ));
-                        }
-                        if (tf.cur_s.0 - 1.0).abs() > 1e-6 || (tf.cur_s.1 - 1.0).abs() > 1e-6 {
-                            let ax = media_rect.x() as f64 + tf.cur_anchor.0 * media_rect.width() as f64;
-                            let ay = media_rect.y() as f64 + tf.cur_anchor.1 * media_rect.height() as f64;
-                            snapshot.translate(&gtk::graphene::Point::new(ax as f32, ay as f32));
-                            snapshot.scale(tf.cur_s.0 as f32, tf.cur_s.1 as f32);
-                            snapshot.translate(&gtk::graphene::Point::new(-ax as f32, -ay as f32));
-                        }
-                    }
-                    // 绘制到比 clip 再大 MEDIA_EDGE_BLEED 的范围（clip 会裁掉多余的）：
-                    // 纹理被缩放到 bleed 矩形，clip 边界离纹理自身边缘还有 2px，
-                    // 双线性采样取到的是纹理内部像素 → 照片边缘不半透明。
-                    snapshot.append_texture(&tex, &bleed);
-                    if tframe.is_some() {
-                        if ripple_circle.is_some() {
-                            snapshot.pop(); // rounded clip（涟漪）
+                        if let Some(rf) = tf.ripple {
+                            // **涟漪**：把新图按同心圈层分别绘制（半径由大到小，
+                            // 后画的盖住先画的）→ 每层只露出自己那一圈，
+                            // 且每层缩放相位相反、幅度递减 → 交界处错位 = 水面波动。
+                            // 这些层都锚定在**波前**上，所以波纹随波前一起向外走。
+                            // 最外层的圆半径就是波前 → 它同时充当"揭示边界"，
+                            // 不需要再单独压一个圆形裁剪（少一次 push/pop，也少一处失衡风险）。
+                            for (rk, sc) in ripple_bands(&rf) {
+                                let r = (rf.r * rk) as f32;
+                                let cx = media_rect.x() as f64 + rf.cx * media_rect.width() as f64;
+                                let cy = media_rect.y() as f64 + rf.cy * media_rect.height() as f64;
+                                snapshot.save();
+                                snapshot.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(
+                                    gtk::graphene::Rect::new(
+                                        cx as f32 - r,
+                                        cy as f32 - r,
+                                        r * 2.0,
+                                        r * 2.0,
+                                    ),
+                                    r,
+                                ));
+                                // 该层的缩放（以落点为锚点）
+                                snapshot.translate(&gtk::graphene::Point::new(
+                                    cx as f32, cy as f32,
+                                ));
+                                snapshot.scale(sc as f32, sc as f32);
+                                snapshot.translate(&gtk::graphene::Point::new(
+                                    -cx as f32, -cy as f32,
+                                ));
+                                snapshot.append_texture(&tex, &bleed);
+                                snapshot.pop(); // rounded clip
+                                snapshot.restore();
+                            }
+                        } else {
+                            if (tf.cur_t.0, tf.cur_t.1) != (0.0, 0.0) {
+                                snapshot.translate(&gtk::graphene::Point::new(
+                                    tf.cur_t.0 as f32,
+                                    tf.cur_t.1 as f32,
+                                ));
+                            }
+                            if (tf.cur_s.0 - 1.0).abs() > 1e-6 || (tf.cur_s.1 - 1.0).abs() > 1e-6 {
+                                let ax = media_rect.x() as f64
+                                    + tf.cur_anchor.0 * media_rect.width() as f64;
+                                let ay = media_rect.y() as f64
+                                    + tf.cur_anchor.1 * media_rect.height() as f64;
+                                snapshot.translate(&gtk::graphene::Point::new(ax as f32, ay as f32));
+                                snapshot.scale(tf.cur_s.0 as f32, tf.cur_s.1 as f32);
+                                snapshot.translate(&gtk::graphene::Point::new(
+                                    -ax as f32, -ay as f32,
+                                ));
+                            }
+                            // 绘制到比 clip 再大 MEDIA_EDGE_BLEED 的范围（clip 会裁掉多余的）：
+                            // 纹理被缩放到 bleed 矩形，clip 边界离纹理自身边缘还有 2px，
+                            // 双线性采样取到的是纹理内部像素 → 照片边缘不半透明。
+                            snapshot.append_texture(&tex, &bleed);
                         }
                         snapshot.pop(); // opacity
+                    } else {
+                        snapshot.append_texture(&tex, &bleed);
                     }
                     snapshot.restore();
                 }
@@ -1498,6 +1530,34 @@ mod trans_tests {
         assert_eq!(Effect::parse("pull_back"), Effect::PullBack);
         assert_eq!(Effect::parse(""), Effect::Fade);
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
+    }
+
+    /// **涟漪回归（水面波动）**：圈层必须**半径递减**（由大到小逐层盖出圆环带）、
+    /// 缩放**相位交替**（±）且幅度**递减**、幅度要"看得见但不夸张"
+    /// （太小没有水感、太大变成图像撕裂）。
+    #[test]
+    fn ripple_bands_undulate_and_decay() {
+        let geo = TransAnim::ripple_geo(0.6, 400.0, 300.0, 0.5, 0.5);
+        let bands = ripple_bands(&geo);
+        assert!(bands.len() >= 4, "圈层太少看不出水面波动，实际 {}", bands.len());
+        for w in bands.windows(2) {
+            assert!(w[0].0 > w[1].0, "圈层半径必须递减（由大到小画）");
+        }
+        for (i, (_, sc)) in bands.iter().enumerate() {
+            let d = sc - 1.0;
+            assert!(d.abs() < 0.05, "第 {i} 层位移过大（会像图像撕裂）：{d}");
+            assert!(d.abs() > 0.001, "第 {i} 层位移过小（看不出水感）");
+            // 相位交替
+            let want = if i % 2 == 0 { 1.0 } else { -1.0 };
+            assert!(d.signum() == want, "第 {i} 层相位应交替");
+        }
+        // 幅度递减
+        let amps: Vec<f64> = bands.iter().map(|b| (b.1 - 1.0).abs()).collect();
+        for w in amps.windows(2) {
+            assert!(w[0] > w[1], "圈层幅度必须逐层递减：{w:?}");
+        }
+        // 刚起步（半径还很小）时层挤在一起 → 不画
+        assert!(ripple_bands(&TransAnim::ripple_geo(0.0, 400.0, 300.0, 0.5, 0.5)).is_empty());
     }
 
     /// **涟漪回归（多圈）**：相位错开 → 中段必须**同时看到多圈在不同半径上**且
