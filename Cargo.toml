@@ -1,6 +1,6 @@
 [package]
 name = "omaframe"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 rust-version = "1.80"
 description = "Omaframe — 智能自适应 PNG 相框：自动分析透明区域，按素材比例重构相框（Wayland / Hyprland / GTK4）"

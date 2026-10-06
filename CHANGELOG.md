@@ -3,6 +3,25 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.4] - 2026-10-06
+
+### 开发流程修复（这一轮"改了没用"的真正原因）
+- **运行中的进程持有被覆盖的旧二进制**：`make install` 会覆盖 `~/.local/bin/omaframe`，
+  但**已在运行的进程仍指向旧 inode**（`/proc/<pid>/exe` 显示 `(deleted)`）。
+  于是"改了代码 → 安装 → 肉眼测"全程测的都是**旧代码**，
+  表现为"设置里换转场都没效果、相框照样闪"。
+  新增 `make restart-running`（运行中则杀掉重启），并在 `install` 末尾提示。
+
+### 可观测性
+- 转场真正开始时打一条日志：`转场开始：<effect> <ms>ms` —— 可直接确认设置里的效果
+  有没有生效（不必靠肉眼猜）。
+
+### 排查结论（本轮三个反馈）
+1. 设置里切换效果"无效" —— 设置页**确实在写配置**（配置里能看到用户改的 `roll` / `1100ms`），
+   `transition_for_apply` 也按配置返回；失效原因同上（旧镜像）+ 0.5.3 那个未闭合组
+   会让**所有效果退化成同一副样子**（旧图淡出 → 新图末尾弹出），所以怎么看都一样。
+2. 相框消失/闪屏、新图不同步淡入 —— 即 0.5.3 修掉的漏 `pop()`（旧镜像里当然还在）。
+
 ## [0.5.3] - 2026-10-02
 
 ### 修复（一个 bug 同时造成两个现象：相框闪屏 + 新图"瞬间弹出"）
@@ -282,6 +301,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.5.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.4
 [0.5.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.3
 [0.5.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.2
 [0.5.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.1

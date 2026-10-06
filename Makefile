@@ -7,7 +7,7 @@ APPDIR := $(PREFIX)/share/applications
 ICONDIR := $(PREFIX)/share/icons
 PKG := omaframe
 
-.PHONY: all build test install uninstall run clean fmt versions rollback
+.PHONY: all build test install uninstall run clean fmt versions rollback restart-running
 
 all: build
 
@@ -49,8 +49,17 @@ install: build
 	@echo "  菜单入口  $(APPDIR)/$(PKG).desktop（应用菜单里搜“桌面相框”）"
 	@echo "  配置目录  $(CONFIG_DIR)"
 	@echo
+	@echo "注意：若程序已在运行，请 make restart-running（否则进程仍在跑旧二进制）"
 	@echo "试用：$(BINDIR)/$(PKG)          启动"
 	@echo "      $(BINDIR)/$(PKG) settings 打开设置"
+
+## 重启运行中的实例（改了代码/装了新构建后必须做，否则进程还跑旧 inode）
+restart-running:
+	@if pgrep -x $(PKG) >/dev/null 2>&1; then \
+		pkill -x $(PKG) || true; sleep 1; \
+		setsid nohup $(BINDIR)/$(PKG) >/dev/null 2>&1 & \
+		sleep 2; echo "已重启 $(PKG)（$(pgrep -x $(PKG) | head -1)）"; \
+	else echo "$(PKG) 未在运行"; fi
 
 uninstall:
 	rm -f $(BINDIR)/$(PKG) $(AUTOSTART_DIR)/$(PKG).desktop

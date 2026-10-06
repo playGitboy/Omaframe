@@ -882,7 +882,6 @@ impl MediaPlayer {
     /// 本次图片切换该用的转场（None = 不转场）
     fn transition_for_apply(self: &Rc<Self>) -> Option<(String, u32)> {
         // 首帧没有"上一张"，无从淡出
-        // 首帧没有"上一张"，无从淡出
         if !self.shown_once.replace(true) {
             return None;
         }

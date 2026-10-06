@@ -1154,6 +1154,7 @@ impl MediaView {
                     duration: std::time::Duration::from_millis(ms.max(1) as u64),
                 });
                 imp.anim_gen.set(imp.anim_gen.get().wrapping_add(1));
+                crate::debug!("转场开始：{kind} {ms}ms");
                 self.start_anim_tick();
             } else {
                 // 首张 / 没有上一张：没有可淡出的对象，直接显示
