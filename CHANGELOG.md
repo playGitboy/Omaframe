@@ -3,6 +3,14 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.6] - 2026-10-06
+
+### 调参
+- `RIPPLE_DROP_JITTER` 0.22 → **0.30**：涟漪落点范围扩大到中心 ±30%
+  （落点落在 [0.20, 0.80]，仍在 [0.12, 0.88] 的安全夹取范围内，不会被夹）。
+
+45/45 测试连跑 3 次稳定、0 编译警告。
+
 ## [0.6.5] - 2026-10-06
 
 ### 调参 + 新特性
@@ -464,6 +472,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.6.6]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.6
 [0.6.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.5
 [0.6.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.4
 [0.6.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.6.3
