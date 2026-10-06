@@ -40,7 +40,6 @@ pub enum Effect {
     PullBack,
     Slide,
     Roll,
-    PageFlip,
 }
 
 impl Effect {
@@ -50,7 +49,6 @@ impl Effect {
             "pull_back" => Effect::PullBack,
             "slide" => Effect::Slide,
             "roll" => Effect::Roll,
-            "page_flip" => Effect::PageFlip,
             _ => Effect::Fade,
         }
     }
@@ -96,7 +94,10 @@ impl TransAnim {
     }
 
     /// 按效果算出本帧参数。`mw/mh` = 媒体矩形尺寸（逻辑像素）。
-    fn frame(&self, mw: f64, mh: f64) -> TransFrame {
+    /// `same_rect`：上一张与当前张的绘制矩形是否完全一致。
+    /// 不一致时（相框尺寸随素材比例变化）推动类效果会出现"推入缝对不齐"，
+    /// 因此**自动退化为淡入淡出**，观感自然。
+    fn frame(&self, mw: f64, mh: f64, same_rect: bool) -> TransFrame {
         let p = self.progress();
         let mut f = TransFrame {
             prev_a: 1.0 - p,
@@ -123,27 +124,21 @@ impl TransAnim {
                 f.cur_s = (1.10 - 0.10 * p, 1.10 - 0.10 * p);
             }
             // 横向推动：旧图左退、新图右入（整屏推，无空隙）
-            Effect::Slide => {
+            Effect::Slide if same_rect => {
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
                 f.cur_t = ((1.0 - p) * mw, 0.0);
                 f.prev_t = (-p * mw, 0.0);
             }
             // 垂直卷帘：新图自上而下揭开，旧图下移
-            Effect::Roll => {
+            Effect::Roll if same_rect => {
                 f.prev_a = 1.0;
                 f.cur_a = 1.0;
                 f.cur_t = (0.0, -(1.0 - p) * mh);
                 f.prev_t = (0.0, p * mh);
             }
-            // 翻页：旧页以**左边缘**为轴横向压扁（掀起来），新页自左向右揭开
-            Effect::PageFlip => {
-                f.prev_a = 1.0;
-                f.cur_a = 1.0;
-                f.prev_anchor = (0.0, 0.5);
-                f.prev_s = (1.0 - p, 1.0);
-                f.cur_clip = Some((0.0, 0.0, p, 1.0));
-            }
+            // 尺寸变化时推动类不适用 → 落回淡入淡出（上面的 match 已退化）
+            Effect::Slide | Effect::Roll => {}
         }
         f
     }
@@ -192,6 +187,9 @@ mod imp {
         pub logged: Cell<bool>,
         /// 转场：上一张纹理（动画期间与当前纹理同时绘制）
     pub prev_tex: RefCell<Option<gdk::Texture>>,
+    /// 上一张**当时的绘制矩形**（相框尺寸随素材比例变化，所以必须记住旧矩形；
+    /// 用新矩形画旧图会尺寸不匹配、盖不满内孔 → 中间透出桌面 = "闪一下"）
+    pub prev_rect: RefCell<Option<(i32, i32, i32, i32)>>,
     /// 转场动画状态（None = 不在转场）
     pub anim: RefCell<Option<TransAnim>>,
     /// 转场 tick 代号：每次新动画 +1，旧 tick 回调发现代号变了就自行退出
@@ -295,13 +293,40 @@ mod imp {
                     media_rect.width() + g * 2.0,
                     media_rect.height() + g * 2.0,
                 );
-                let tframe = self
-                    .anim
-                    .borrow()
-                    .as_ref()
-                    .map(|a| a.frame(media_rect.width() as f64, media_rect.height() as f64));
+                // 上一张与当前张的矩形是否一致（不一致 → 推动类退化）
+                let prev_rect_now = self.prev_rect.borrow().clone();
+                let same_rect = prev_rect_now.is_some_and(|(x, y, w, h)| {
+                    (x, y, w, h)
+                        == (
+                            media_rect.x() as i32,
+                            media_rect.y() as i32,
+                            media_rect.width() as i32,
+                            media_rect.height() as i32,
+                        )
+                });
+                let tframe = self.anim.borrow().as_ref().map(|a| {
+                    a.frame(
+                        media_rect.width() as f64,
+                        media_rect.height() as f64,
+                        same_rect,
+                    )
+                });
                 if let (Some(tf), Some(prev)) = (tframe.as_ref(), self.prev_tex.borrow().clone()) {
                     if tf.prev_a > 0.004 {
+                        // 上一张按**它自己的矩形**绘制（不是新矩形）：相框尺寸会随素材比例变，
+                        // 用新矩形画旧图会尺寸不匹配、盖不满内孔 → 中间透出桌面 = "闪一下"。
+                        let (px, py, pw, ph) = prev_rect_now.unwrap_or((
+                            media_rect.x() as i32,
+                            media_rect.y() as i32,
+                            media_rect.width() as i32,
+                            media_rect.height() as i32,
+                        ));
+                        let prev_bleed = gtk::graphene::Rect::new(
+                            px as f32 - g,
+                            py as f32 - g,
+                            pw as f32 + g * 2.0,
+                            ph as f32 + g * 2.0,
+                        );
                         snapshot.save();
                         snapshot.push_opacity(tf.prev_a);
                         if (tf.prev_t.0, tf.prev_t.1) != (0.0, 0.0) {
@@ -317,7 +342,7 @@ mod imp {
                             snapshot.scale(tf.prev_s.0 as f32, tf.prev_s.1 as f32);
                             snapshot.translate(&gtk::graphene::Point::new(-ax as f32, -ay as f32));
                         }
-                        snapshot.append_texture(&prev, &bleed);
+                        snapshot.append_texture(&prev, &prev_bleed);
                         snapshot.restore();
                     }
                 }
@@ -1116,6 +1141,8 @@ impl MediaView {
             if let (Some(cur), Some(_new)) = (cur, texture.clone()) {
                 let (kind, ms) = tr.unwrap();
                 *imp.prev_tex.borrow_mut() = Some(cur);
+                // 记住上一张**当时的**媒体矩形（相框尺寸随素材比例变，两帧矩形通常不同）
+                *imp.prev_rect.borrow_mut() = Some(imp.media_rect.get());
                 *imp.anim.borrow_mut() = Some(TransAnim {
                     kind: Effect::parse(kind),
                     start: std::time::Instant::now(),
@@ -1160,6 +1187,7 @@ impl MediaView {
                 imp.anim_gen.set(imp.anim_gen.get().wrapping_add(1));
                 *imp.anim.borrow_mut() = None;
                 *imp.prev_tex.borrow_mut() = None;
+                *imp.prev_rect.borrow_mut() = None;
                 v.queue_draw();
                 return glib::ControlFlow::Break;
             }
@@ -1287,12 +1315,11 @@ mod trans_tests {
             Effect::PullBack,
             Effect::Slide,
             Effect::Roll,
-            Effect::PageFlip,
         ] {
             let a = anim(k);
             // progress 是时间函数，这里直接验证 frame() 在两个端点的形状：
             // 用 mock 不了时间，所以只做"形状/范围"校验
-            let f = a.frame(mw, mh);
+            let f = a.frame(mw, mh, true);
             let nums = [
                 f.prev_a, f.cur_a, f.prev_t.0, f.prev_t.1, f.cur_t.0, f.cur_t.1,
                 f.prev_s.0, f.prev_s.1, f.cur_s.0, f.cur_s.1,
@@ -1327,11 +1354,32 @@ mod trans_tests {
         assert_eq!(Effect::parse("fade"), Effect::Fade);
         assert_eq!(Effect::parse("slide"), Effect::Slide);
         assert_eq!(Effect::parse("roll"), Effect::Roll);
-        assert_eq!(Effect::parse("page_flip"), Effect::PageFlip);
         assert_eq!(Effect::parse("ken_burns"), Effect::KenBurns);
         assert_eq!(Effect::parse("pull_back"), Effect::PullBack);
         assert_eq!(Effect::parse(""), Effect::Fade);
         assert_eq!(Effect::parse("不存在"), Effect::Fade);
+    }
+
+    /// **关键回归**：相框尺寸会随素材比例变化，两帧矩形通常不同。
+    /// 此时推动类（slide/roll）必须**自动退化为淡入淡出** —— 否则"推入缝"对不齐，
+    /// 且旧图在新矩形里盖不满内孔 → 中间透出桌面（用户报的"移出后闪一下"）。
+    #[test]
+    fn push_effects_fall_back_when_rect_changes() {
+        let (mw, mh) = (400.0, 300.0);
+        for k in [Effect::Slide, Effect::Roll] {
+            let f = anim(k).frame(mw, mh, false); // 两帧矩形不同
+            assert!(
+                (f.prev_a + f.cur_a - 1.0).abs() < 1e-9,
+                "{k:?} 矩形不同时应退化为淡入淡出（不透明度互补）"
+            );
+            assert_eq!(f.cur_t, (0.0, 0.0), "{k:?} 退化后不应有位移");
+            assert_eq!(f.prev_t, (0.0, 0.0), "{k:?} 退化后不应有位移");
+        }
+        // 矩形一致时仍应是推动（有位移、不透明度为 1）
+        for k in [Effect::Slide, Effect::Roll] {
+            let f = anim(k).frame(mw, mh, true);
+            assert!((f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9);
+        }
     }
 
     /// 推动类效果在两端必须"整屏推"：起点只看得到旧图、终点只看得到新图，
@@ -1340,7 +1388,7 @@ mod trans_tests {
     fn effect_slide_and_roll_push_full_width() {
         let (mw, mh) = (400.0, 300.0);
         for k in [Effect::Slide, Effect::Roll] {
-            let f = anim(k).frame(mw, mh);
+            let f = anim(k).frame(mw, mh, true);
             assert!((f.prev_a - 1.0).abs() < 1e-9 && (f.cur_a - 1.0).abs() < 1e-9);
             // 横向效果：位移在 x 轴上；纵向效果：位移在 y 轴上（另一个为 0）
             if k == Effect::Slide {

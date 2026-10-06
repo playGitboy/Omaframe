@@ -3,6 +3,25 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.2] - 2026-10-02
+
+### 修复（转场观感：过渡生硬 / 中间闪一下）
+- **上一张没记住自己的绘制矩形**：相框尺寸由素材比例推导（换素材时相框矩形会变），
+  而转场把旧图按**新**矩形绘制 → 尺寸不匹配、盖不满内孔 → 中间透出桌面（"闪一下"）。
+  现在转场开始时记下旧矩形，旧图**按自身几何**绘制。
+- **两帧矩形不同时推动类效果会错位**：`slide` / `roll` 在矩形不一致时"推入缝"对不齐。
+  现在只要两帧矩形不同，二者**自动退化为淡入淡出**（不透明度互补、无位移），
+  保证过渡连续自然。两帧矩形一致时仍是完整的整屏推动。
+
+### 移除
+- **`page_flip`（翻页）**：观感不佳，按用户要求删除。效果列表从 6 种降为 5 种
+  （淡入淡出 / 缓慢推近 / 拉远 / 横向滑动 / 垂直卷帘）；配置里若残留 `page_flip`
+  会被 `sanitize()` 自动回落为 `fade`。
+
+### 验证
+- 新增回归单测：**矩形变化时推动类必须退化为淡入淡出**（不透明度互补 + 无位移），
+  并保留"矩形一致时整屏推"的断言 → 41/41 通过、0 编译警告。
+
 ## [0.5.1] - 2026-10-02
 
 ### 新增
@@ -243,6 +262,7 @@
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.5.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.2
 [0.5.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.1
 [0.5.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.5.0
 [0.4.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.4.5
