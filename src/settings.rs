@@ -432,11 +432,10 @@ fn build(state: &Rc<AppState>) -> Panel {
         });
     }
     g_media.add(&dir_row);
-    page.add(&g_media);
 
     // ---------------- 显示 ----------------
     let g_display = adw::PreferencesGroup::builder()
-        .title("显示")
+        .title("尺寸")
         .description("宽高是“保持比例的最大允许尺寸”，不会拉伸变形")
         .build();
 
@@ -460,11 +459,10 @@ fn build(state: &Rc<AppState>) -> Panel {
     );
     g_display.add(&max_w);
     g_display.add(&max_h);
-    page.add(&g_display);
 
     // ---------------- 轮换 ----------------
     let g_slide = adw::PreferencesGroup::builder()
-        .title("自动轮换")
+        .title("轮换")
         .build();
     g_slide.add(&switch_row(
         "启用",
@@ -487,7 +485,6 @@ fn build(state: &Rc<AppState>) -> Panel {
         |c| c.slideshow.random,
         |c, v| c.slideshow.random = v,
     ));
-    page.add(&g_slide);
 
     // ---------------- 视频 ----------------
     let g_video = adw::PreferencesGroup::builder()
@@ -514,7 +511,6 @@ fn build(state: &Rc<AppState>) -> Panel {
         |c| c.video.max_fps,
         |c, v| c.video.max_fps = v,
     ));
-    page.add(&g_video);
 
     // ---------------- 相框 ----------------
     let g_frame = adw::PreferencesGroup::builder()
@@ -739,14 +735,26 @@ fn build(state: &Rc<AppState>) -> Panel {
             }
         });
 
+        page.add(&g_media);
+        page.add(&g_slide);
+        page.add(&g_video);
         page.add(&g_tr);
     }
 
+    // ---------------- 分组顺序 ----------------
+    // 媒体 → 轮换 → 视频 → 转场 → 相框 → 尺寸 → 桌面位置 → 常规 →(链接 / 退出)
+    //
+    // 三条原则：
+    //  1) **同主题相邻**：尺寸上限(g_display) 与 桌面位置(g_pos) 都属于"相框怎么摆"，
+    //     原来中间隔着"常规"，现在贴在一起；
+    //  2) **流程自上而下**：先选素材 → 定怎么换（轮换/视频/转场）→ 定外框 → 定摆放；
+    //  3) **应用级项沉底**：开机启动 / 项目主页 / 退出 与内容无关，统一放最下面。
+    // 转场(g_tr) 在它自己的作用域里 add（见上），顺序天然落在"视频"之后。
     page.add(&g_frame);
-    page.add(&g_general);
+    page.add(&g_display);
 
     // ---------------- 位置 ----------------
-    let g_pos = adw::PreferencesGroup::builder().title("位置与外观").build();
+    let g_pos = adw::PreferencesGroup::builder().title("桌面位置").build();
     // 桌面显示：显示/隐藏桌面上的相框（媒体与设置照常工作）
     {
         let row = adw::SwitchRow::new();
@@ -764,6 +772,7 @@ fn build(state: &Rc<AppState>) -> Panel {
         g_pos.add(&row);
     }
     page.add(&g_pos);
+    page.add(&g_general);
 
     // ---------------- 项目链接 ----------------
     // 放在设置页最下方，点击用系统默认浏览器打开项目仓库
