@@ -150,10 +150,23 @@ pub struct FrameConfig {
 /// 可选转场效果（key → 界面名）。
 /// 实现约束：只用 snapshot 的 translate/scale/push_opacity/push_clip，
 /// **不做 CPU 像素运算、不建 ImageSurface、不用 filter** —— 保证开销在 GPU 侧。
+/// 转场时长的硬上限（毫秒）。实际上限还要看轮换间隔 —— 见 `transition_max_ms`。
+pub const MAX_TRANSITION_MS: u32 = 5_000;
+
+/// 转场时长上限（毫秒） = min(硬上限, **轮换间隔**)。
+/// 转场不该比一次轮换还长，否则还没播完就切到下一张。
+/// sanitize 与设置页的 SpinRow 共用它 —— 上限只有一个来源，不会两边不一致。
+pub fn transition_max_ms(c: &Config) -> i32 {
+    c.slideshow
+        .interval
+        .saturating_mul(1000)
+        .clamp(200, MAX_TRANSITION_MS) as i32
+}
+
 pub const TRANSITION_EFFECTS: [(&str, &str); 7] = [
     ("fade", "淡入淡出"),
     ("ken_burns", "缓慢推近"),
-    ("pull_back", "拉远"),
+    ("pull_back", "缓慢拉远"),
     ("slide", "横向滑动"),
     ("roll", "垂直卷帘"),
     ("ripple", "水滴涟漪"),
@@ -183,7 +196,7 @@ impl Default for TransitionConfig {
             enabled: true,
             effect: "fade".to_string(),
             random: false,
-            duration_ms: 1000,
+            duration_ms: 2000,
             apply_to_video: true,
         }
     }
@@ -453,8 +466,10 @@ impl Config {
         self.video.max_fps = self.video.max_fps.clamp(1, 60);
 
         // 转场：时长夹到合理区间；效果名非法则回落 fade（配置被手改也不炸）
+        // 上限 = min(5s, 轮换间隔)；必须在 `&mut self.transition` 之前算（借用冲突）
+        let tr_cap = transition_max_ms(self) as u32;
         let t = &mut self.transition;
-        t.duration_ms = t.duration_ms.clamp(200, 5_000);
+        t.duration_ms = t.duration_ms.clamp(200, tr_cap);
         if !TRANSITION_EFFECTS.iter().any(|(k, _)| *k == t.effect) {
             t.effect = "fade".into();
         }
@@ -646,5 +661,49 @@ impl ConfigManager {
 impl Default for ConfigManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod transition_limit_tests {
+    use super::*;
+
+    fn with_interval(secs: u32) -> Config {
+        let mut c = Config::default();
+        c.slideshow.interval = secs;
+        c
+    }
+
+    /// 转场时长上限 = min(5s, **轮换间隔**)；sanitize 必须真的压下来。
+    #[test]
+    fn transition_duration_is_capped_by_rotation_interval() {
+        // 硬上限 5s：间隔够长时不受间隔影响
+        assert_eq!(transition_max_ms(&with_interval(100)), 5_000);
+        assert_eq!(transition_max_ms(&with_interval(5)), 5_000);
+        // 受间隔约束
+        assert_eq!(transition_max_ms(&with_interval(3)), 3_000);
+        assert_eq!(transition_max_ms(&with_interval(1)), 1_000);
+
+        // sanitize 真的会压（配置被手改成超长也一样）
+        let mut c = with_interval(1);
+        c.transition.duration_ms = 5_000;
+        c.sanitize();
+        assert_eq!(
+            c.transition.duration_ms, 1_000,
+            "间隔 1 秒时转场时长必须被压到 1000ms，否则转场没播完就切下一张"
+        );
+        // 间隔调大后也不会低于下限
+        let mut c = with_interval(3);
+        c.transition.duration_ms = 10;
+        c.sanitize();
+        assert_eq!(c.transition.duration_ms, 200, "低于下限应抬到 200ms");
+    }
+
+    /// 默认时长 2000ms + 效果更名「缓慢拉远」。
+    #[test]
+    fn defaults_and_effect_name() {
+        assert_eq!(Config::default().transition.duration_ms, 2_000);
+        assert!(TRANSITION_EFFECTS.contains(&("pull_back", "缓慢拉远")));
+        assert_eq!(TRANSITION_EFFECTS.len(), 7);
     }
 }

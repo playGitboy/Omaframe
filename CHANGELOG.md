@@ -3,6 +3,27 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.3] - 2026-10-06
+
+### 变更
+- 效果更名：「拉远」→ **「缓慢拉远」**（`pull_back` 本来就是"新图从更大处缓缓收回"，
+  原名太短、看不出是缓动）。
+- **默认转场时长 1000ms → 2000ms**。
+- **转场时长上限不得超过轮换间隔**：上限 = `min(5s, 轮换间隔)`。
+  间隔 1 秒时最多只能 1000ms —— 否则转场还没播完就切到下一张，观感是"闪一下就换"。
+  设置页的 SpinRow 上限与 `sanitize()` **共用同一个来源**
+  `config::transition_max_ms()`，不会出现"界面能调到 3000、保存时又被砍回 1000"的错位。
+  副标题标注「不超过轮换间隔」。
+
+### 测试
+新增 `transition_limit_tests`：
+- 上限随间隔变化（1s→1000、3s→3000、5s/100s→硬上限 5000）；
+- `sanitize()` **真的会压**被手改超长的时长（间隔 1s + 时长 5000 → 压到 1000），
+  低于下限则抬到 200；
+- 默认时长恰为 2000ms、效果表含 `("pull_back", "缓慢拉远")`、共 7 项。
+
+48/48 测试通过、0 编译警告。
+
 ## [0.8.2] - 2026-10-06
 
 ### 修复：改了设置页但界面没变（运行的是旧二进制）
@@ -610,6 +631,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.8.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.3
 [0.8.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.2
 [0.8.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.1
 [0.8.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.0

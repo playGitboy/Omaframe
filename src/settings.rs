@@ -666,15 +666,19 @@ fn build(state: &Rc<AppState>) -> Panel {
         g_tr.add(&random_row);
 
         // 时长（不叠加到轮换间隔：转场只在切换瞬间播放）
+        // 上限与 sanitize 共用 config::transition_max_ms → 上限只有一个来源，
+        // 不会出现"设置页能调到 3000、但保存时被 sanitize 砍回 1000"的错位。
+        let dur_cap = crate::config::transition_max_ms(&state.config.borrow());
         let dur_row = spin_row(
             "时长（毫秒）",
             200,
-            3000,
+            dur_cap,
             100,
             state.clone(),
             |c| c.transition.duration_ms as i32,
             |c, v| c.transition.duration_ms = v.max(0) as u32,
         );
+        dur_row.set_subtitle("不超过轮换间隔");
         g_tr.add(&dur_row);
 
         // 视频是否也应用转场（关掉即回到旧行为：视频不转场）
