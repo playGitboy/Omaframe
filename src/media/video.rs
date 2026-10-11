@@ -430,7 +430,7 @@ fn probe_size(path: &Path) -> Option<(i32, i32)> {
     Some(if swapped { (h, w) } else { (w, h) })
 }
 
-fn has_binary(name: &str) -> bool {
+pub(crate) fn has_binary(name: &str) -> bool {
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
             let p = dir.join(name);

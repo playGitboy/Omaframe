@@ -3,6 +3,32 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.4] - 2026-10-06
+
+### 兼容性 / 健壮性（跨发行版）
+- **托盘图标搜索路径不再写死**：原来硬编码 `/usr/share/icons`、`/usr/local/share/icons`，
+  现按 XDG 规范读取 **`XDG_DATA_DIRS`**（缺省才回落到那两个）。
+  影响 NixOS、Flatpak 沙盒、自定义 prefix（`/opt`、`/app/share`）等系统 ——
+  这些环境下原来解析不到图标主题，只能退回自绘 `IconPixmap`。
+- **ImageMagick 兼容 IM6 / IM7**：IM7 的命令是 `magick`，而 IM6（Debian/Ubuntu 默认）
+  只有 `convert`。原来只认 `magick` → 这些系统上 HEIC/AVIF 的外部解码兜底直接失效。
+- **外部解码器先探测再调用**：复用 `video::has_binary`（提为 `pub(crate)`）。
+  原来缺 ffmpeg/ImageMagick 时，**每个文件都要白 spawn 一次**失败进程。
+
+### 修复：设置面板窗口生命周期
+- **面板窗口会累积（内存只涨不降）**：面板每次打开都会重建（有意设计：重读配置 +
+  重扫素材目录），但 `hide()` 只 `set_visible(false)`。由于窗口已挂到 GApplication
+  （GtkApplication 持有其引用），旧窗口**不会被释放** → 反复开关持续累积控件树。
+  现在 `hide()` 会在 idle 中真正 `destroy()` 它（放在 idle 是因为 `hide()` 可能正从
+  `close_request`/焦点回调里被调用，且 `close_request` 返回 `Propagation::Stop` 时
+  GTK 不会自行销毁，必须由这里收尾）。
+- **`set_application` 时机错误**：原来在 `present()` **之后**才把面板挂到 Application
+  （窗口已 realize，GtkApplication 的窗口跟踪错位）。现在移到 `settings::show()` 内部、
+  `present()` 之前，并用 `gio::Application::default()` 取实例 —— 托盘 / 控制通道 /
+  命令行三种打开方式都能正确挂上，不依赖调用点是否持有 app。
+
+48/48 测试通过、0 编译警告。
+
 ## [0.8.3] - 2026-10-06
 
 ### 变更
@@ -631,6 +657,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.8.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.4
 [0.8.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.3
 [0.8.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.2
 [0.8.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.1

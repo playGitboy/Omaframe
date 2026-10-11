@@ -298,10 +298,9 @@ pub fn run(args: &[String]) -> Result<u8, String> {
     let app_state = state.clone();
     app.connect_activate(move |app| {
         if want_settings {
+            // 挂 Application 的时机在 settings::show() 内部（**必须在 present 之前**）；
+            // 这里不再补挂 —— 补挂发生在 present 之后，时机是错的。
             crate::settings::show(&app_state);
-            if let Some(p) = app_state.settings_window.borrow().as_ref() {
-                p.set_application(app);
-            }
         }
         if quit_only {
             return;

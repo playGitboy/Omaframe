@@ -104,6 +104,15 @@ pub fn show(state: &Rc<AppState>) {
     // 扫完由 after_scan() 刷新当前素材/列表。
     hide(state, "重建");
     let panel = build(state);
+    // **必须在 present() 之前挂到 Application**：否则窗口已经 realize 才关联，
+    // GtkApplication 的窗口跟踪会错位。原来是在 app.rs 里 present 之后才补挂的。
+    // 用 gio::Application::default() 取默认实例 → 任何调用方（托盘/控制 socket/
+    // 命令行）打开面板都能正确挂上，不依赖调用点是否持有 app。
+    if let Some(app) = gio::Application::default() {
+        if let Ok(a) = app.downcast::<adw::Application>() {
+            panel.set_application(&a);
+        }
+    }
     panel.win.present();
     panel.win.grab_focus();
     *state.settings_window.borrow_mut() = Some(panel);
@@ -130,7 +139,17 @@ pub fn hide(state: &Rc<AppState>, why: &str) {
     let taken = state.settings_window.borrow_mut().take();
     if let Some(p) = taken {
         p.win.set_visible(false);
-        crate::debug!("设置面板 → 隐藏（{why}）");
+        crate::debug!("设置面板 → 隐藏并销毁（{why}）");
+        // 面板**每次打开都会重建**（有意为之：重读配置 + 重扫素材目录），
+        // 所以旧窗口必须真正销毁。只 set_visible(false) 是不够的：
+        // 窗口已挂到 GApplication（GtkApplication 持有其引用）→ 它会一直活着，
+        // 反复开关设置页就会持续累积控件树（内存只涨不降）。
+        //
+        // 放到 idle 里销毁：hide() 可能正从 close_request / 焦点回调里被调用，
+        // 在信号回调中直接销毁窗口时序敏感 —— 而且 close_request 里我们返回
+        // Propagation::Stop，GTK 不会自己销毁，必须由这里收尾。
+        let win = p.win.clone();
+        glib::idle_add_local_once(move || win.destroy());
     }
 }
 

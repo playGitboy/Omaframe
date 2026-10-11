@@ -265,22 +265,37 @@ fn looks_undecodable(path: &Path, bytes: &[u8]) -> bool {
 /// 用外部解码器把图片转成 PNG 字节（ffmpeg 优先，其次 ImageMagick）
 fn external_to_png(path: &Path) -> Option<Vec<u8>> {
     use std::process::{Command, Stdio};
+    // 先用 has_binary 探一次：缺工具时**不要每个文件都白 spawn 一次**（跨发行版常见：
+    // 有的系统只装了 ImageMagick 没装 ffmpeg，或反之）。
+    let has_ffmpeg = crate::media::video::has_binary("ffmpeg");
+    // ImageMagick 的**发行版差异**：IM7 是 `magick`，IM6（Debian/Ubuntu 默认装的）
+    // 只有 `convert`。只认 `magick` 会让这些系统上 HEIC/AVIF 兜底直接失效。
+    let im = ["magick", "convert"]
+        .into_iter()
+        .find(|b| crate::media::video::has_binary(b));
+    if !has_ffmpeg && im.is_none() {
+        crate::debug!("无 ffmpeg / ImageMagick，跳过外部解码 {}", path.display());
+        return None;
+    }
     // ffmpeg：-frames:v 1 取首帧，输出 PNG 到 stdout
-    let out = Command::new("ffmpeg")
+    let out = has_ffmpeg.then(|| Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
         .arg(path)
         .args(["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .ok();
+        .ok()).flatten();
     if let Some(o) = out {
         if o.status.success() && o.stdout.len() > 16 {
             return Some(o.stdout);
         }
     }
     // ImageMagick（系统装了 HEIC delegate）
-    let out = Command::new("magick")
+    let Some(im) = im else {
+        return None;
+    };
+    let out = Command::new(im)
         .arg(path)
         .arg("png:-")
         .stdin(Stdio::null())

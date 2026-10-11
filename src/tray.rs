@@ -54,13 +54,23 @@ fn resolve_icon_name(preferred: &str) -> String {
 
     // 图标搜索根目录（与 GTK/Quickshell 查找路径一致）
     let home = std::env::var("HOME").unwrap_or_default();
-    let roots: Vec<PathBuf> = vec![
+    let mut roots: Vec<PathBuf> = Vec::new();
+    // ① XDG_DATA_HOME（缺省 ~/.local/share）
+    roots.push(
         PathBuf::from(std::env::var("XDG_DATA_HOME").unwrap_or(format!("{home}/.local/share")))
             .join("icons"),
-        PathBuf::from("/usr/share/icons"),
-        PathBuf::from("/usr/local/share/icons"),
-        PathBuf::from(&home).join(".local/share/omarchy/current/theme/icons"),
-    ];
+    );
+    // ② XDG_DATA_DIRS —— **跨发行版关键**：原来写死 /usr/share 与 /usr/local/share，
+    //    但 NixOS、Flatpak 沙盒、自定义 prefix（如 /opt、/app/share）都不在这两个路径下，
+    //    写死会让这些系统上图标主题解析不到（只能退回自绘 IconPixmap）。
+    //    按 XDG 规范取 XDG_DATA_DIRS，缺省才用 /usr/local/share:/usr/share。
+    let data_dirs = std::env::var("XDG_DATA_DIRS")
+        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    for d in data_dirs.split(':').filter(|s| !s.is_empty()) {
+        roots.push(PathBuf::from(d).join("icons"));
+    }
+    // ③ Omarchy 主题自带图标（不是 XDG 布局，单独补一条）
+    roots.push(PathBuf::from(&home).join(".local/share/omarchy/current/theme/icons"));
 
     // 活动图标主题 + 其 Inherits 继承链（宿主也只按这条链找）
     let mut chain: Vec<String> = Vec::new();
