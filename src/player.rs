@@ -76,11 +76,12 @@ struct DragState {
 
 impl MediaPlayer {
     pub fn new(state: Rc<AppState>) -> Option<Rc<Self>> {
-        let (kind, path, recursive, cache_items, cache_budget, slides_cfg, video_autoplay) = {
+        let (kind, path, paths, recursive, cache_items, cache_budget, slides_cfg, video_autoplay) = {
             let cfg = state.config.borrow();
             (
                 cfg.source.kind.clone(),
                 cfg.source.path.clone(),
+                cfg.source.paths.clone(),
                 cfg.source.recursive,
                 cfg.display.cache_items,
                 cfg.display.cache_budget_mb,
@@ -92,6 +93,7 @@ impl MediaPlayer {
         let source_cfg = crate::config::SourceConfig {
             kind,
             path,
+            paths,
             recursive,
         };
         let source = match create_source(&source_cfg) {

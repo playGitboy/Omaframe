@@ -81,10 +81,18 @@ pub trait MediaSource: Send + Sync {
 /// 按 `[source] type` 创建媒体源；未知类型返回错误（V2 在此扩展分支）。
 pub fn create_source(cfg: &crate::config::SourceConfig) -> Result<Box<dyn MediaSource>, SourceError> {
     match cfg.kind.as_str() {
-        "local" | "file" => Ok(Box::new(source::local::LocalMediaSource::new(
-            cfg.path.clone(),
-            cfg.recursive,
-        ))),
+        "local" | "file" => {
+            // 多目录：paths 为空时用 path（sanitize 已保证非空，这里再兜一次）
+            let dirs = if cfg.paths.is_empty() {
+                vec![cfg.path.clone()]
+            } else {
+                cfg.paths.clone()
+            };
+            Ok(Box::new(source::local::LocalMediaSource::new_multi(
+                dirs,
+                cfg.recursive,
+            )))
+        }
         other => Err(SourceError::Unsupported(other.to_string())),
     }
 }

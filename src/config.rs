@@ -79,8 +79,13 @@ pub struct SourceConfig {
     /// 媒体源类型；V1 只有 "local"，V2 扩展 smb/nfs/webdav/http
     #[serde(rename = "type")]
     pub kind: String,
-    /// 本地目录（保存时为展开后的绝对路径）
+    /// 本地目录（保存时为展开后的绝对路径）。
+    /// **兼容字段**：始终等于 `paths[0]` 的镜像 —— 旧版本程序只读它，仍能工作（可降级）。
     pub path: String,
+    /// **唯一真源**：本地目录列表（保存时为展开后的绝对路径）。
+    /// 旧配置没有这一段时，sanitize 会用 `path` 补齐 → 零迁移。
+    #[serde(default)]
+    pub paths: Vec<String>,
     /// 是否递归扫描子目录
     pub recursive: bool,
 }
@@ -231,6 +236,7 @@ impl Default for SourceConfig {
         Self {
             kind: "local".into(),
             path: String::new(),
+            paths: Vec::new(),
             recursive: true,
         }
     }
@@ -241,7 +247,7 @@ impl Default for DisplayConfig {
         Self {
             max_width: 350,
             max_height: 350,
-            cache_items: 12,
+            cache_items: 24,   // 预解码缓存项数：手动连点"下一项"时不至于打空
             cache_budget_mb: 32,
             max_decode_px: 4096,
         }
@@ -485,10 +491,21 @@ impl Config {
         if w.default_anchor.is_empty() {
             w.default_anchor = "top-left".into();
         }
-        if self.source.path.is_empty() {
-            self.source.path = default_media_dir().to_string_lossy().into_owned();
+        // 多目录：`paths` 是真源，`path` 是 paths[0] 的镜像（旧版本可读 → 可降级）
+        if self.source.paths.is_empty() {
+            // 旧配置（只有 path）→ 零迁移；path 也空 → 回落默认目录
+            let legacy = if self.source.path.is_empty() {
+                default_media_dir().to_string_lossy().into_owned()
+            } else {
+                self.source.path.clone()
+            };
+            self.source.paths = vec![legacy];
         }
-        self.source.path = expand_user(&self.source.path).to_string_lossy().into_owned();
+        self.source.paths = normalize_dirs(&self.source.paths);
+        if self.source.paths.is_empty() {
+            self.source.paths = vec![default_media_dir().to_string_lossy().into_owned()];
+        }
+        self.source.path = self.source.paths[0].clone();
         if !self.frame.path.is_empty() {
             let p = expand_user(&self.frame.path);
             // 迁移：旧配置里的绝对路径 → 内置相框库里的文件名
@@ -522,6 +539,47 @@ impl Config {
 /// 那些系统的壁纸位置完全不同。按"存在即用"顺序探测，全部落空才用 ~/Pictures/PhotoFrame。
 ///
 /// 需要 `OMA_MEDIA_DIR` 可显式覆盖（自检/排查用）。
+/// 目录列表规范化：展开 `~` → 去空项 → **词法去重** → **去嵌套**（父子同时列出时只留父）。
+///
+/// 只做词法处理，**不对每个文件 realpath** —— 10 万文件做 10 万次 syscall 不可接受；
+/// 目录本身数量很少（N 个），所以把 canonicalize 的成本留在目录级。
+pub fn normalize_dirs(paths: &[String]) -> Vec<String> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for raw in paths {
+        let t = raw.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let p = expand_user(t);
+        if out.iter().any(|q| *q == p) {
+            continue; // 词法去重
+        }
+        out.push(p);
+    }
+    // 去嵌套：只要**任意另一个**目录是它的祖先（按 path 组件比较）就丢弃它。
+    // 必须顺序无关 —— 用户可能先列子目录再列父目录（只往前看不行的）。
+    // N 是目录数（很小），O(N²) 无妨。
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for (i, p) in out.iter().enumerate() {
+        let nested = out.iter().enumerate().any(|(j, q)| j != i && is_ancestor(q, p));
+        if !nested {
+            kept.push(p.clone());
+        }
+    }
+    kept.into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// 词法判断 `a` 是否是 `b` 的祖先目录（不访问文件系统）。
+fn is_ancestor(a: &Path, b: &Path) -> bool {
+    let (ca, cb): (Vec<_>, Vec<_>) = (a.components().collect(), b.components().collect());
+    if ca.len() >= cb.len() {
+        return false;
+    }
+    ca.iter().zip(cb.iter()).all(|(x, y)| x == y)
+}
+
 pub fn default_media_dir() -> PathBuf {
     let home = home_dir();
     if let Ok(d) = std::env::var("OMA_MEDIA_DIR") {
@@ -705,5 +763,44 @@ mod transition_limit_tests {
         assert_eq!(Config::default().transition.duration_ms, 2_000);
         assert!(TRANSITION_EFFECTS.contains(&("pull_back", "缓慢拉远")));
         assert_eq!(TRANSITION_EFFECTS.len(), 7);
+    }
+}
+
+#[cfg(test)]
+mod multi_dir_tests {
+    use super::*;
+
+    /// 目录列表：去重、去嵌套（父子同时列出只留父）、保序，且**不误判前缀**。
+    #[test]
+    fn normalize_dedups_and_drops_nested() {
+        let got = normalize_dirs(&[
+            "/a/b".into(),
+            "/a/b".into(), // 重复
+            "/a".into(),   // 是 /a/b 的父目录 → /a/b 应被丢掉
+            "/c".into(),
+            "   ".into(), // 空项
+        ]);
+        assert_eq!(got, vec!["/a".to_string(), "/c".to_string()]);
+        // /a 不是 /ab 的祖先（词法比较必须按 path 组件，不能按字符串前缀）
+        assert_eq!(normalize_dirs(&["/a".into(), "/ab".into()]).len(), 2);
+        assert!(normalize_dirs(&[]).is_empty());
+    }
+
+    /// 旧配置（只有 path）→ 零迁移；path 始终镜像 paths[0]（旧版本可降级）。
+    #[test]
+    fn legacy_path_migrates_and_mirrors() {
+        let mut c = Config::default();
+        c.source.path = "/tmp/only-one".into();
+        c.source.paths.clear();
+        c.sanitize();
+        assert_eq!(c.source.paths, vec!["/tmp/only-one".to_string()]);
+        assert_eq!(c.source.path, "/tmp/only-one");
+
+        let mut c = Config::default();
+        c.source.paths = vec!["/x".into(), "/y".into()];
+        c.source.path = "/stale".into();
+        c.sanitize();
+        assert_eq!(c.source.path, "/x", "path 必须被 paths[0] 覆盖");
+        assert_eq!(c.source.paths.len(), 2, "多目录不能被压回一个");
     }
 }

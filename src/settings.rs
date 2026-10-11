@@ -392,65 +392,74 @@ fn build(state: &Rc<AppState>) -> Panel {
     let win_weak: glib::WeakRef<adw::ApplicationWindow> = glib::WeakRef::new();
     win_weak.set(Some(&win));
 
-    let dir_row = adw::EntryRow::builder().title("目录").build();
-    let dir_browse = gtk::Button::builder()
-        .icon_name("folder-open-symbolic")
-        .valign(gtk::Align::Center)
-        .build();
-    {
-        let st = state.clone();
-        let row_in = dir_row.clone();
-        dir_browse.connect_clicked(move |_| {
-            let st = st.clone();
-            let row2 = row_in.clone();
-            // 选目录对话框必须**独立开**，不能把设置面板当父窗口：
-            // ① 面板是 layer-shell surface（不是 xdg_toplevel），把它设成对话框的
-            //    transient parent 会触发协议错误 → 合成器直接踢掉我们的客户端
-            //    （现象：点"打开"就闪退，Hyprland 日志报 "error in client communication"）。
-            // ② 面板在 Overlay 层、盖满屏幕，会把普通 toplevel 的对话框整个挡住。
-            // 所以：先收起面板 → 以无父窗口方式打开对话框 → 结束后再把面板放回来。
-            hide(&st, "打开目录对话框");
-            let dialog = gtk::FileDialog::builder()
-                .title("选择媒体目录")
-                .build();
-            // 必须用 select_folder（**选目录**）；open() 是"选文件"，
-            // 选到文件后 source.path 变成文件路径 → 扫描失败、目录内容不刷新
-            dialog.select_folder(
-                None::<&gtk::Window>,
-                gio::Cancellable::NONE,
-                move |res| {
-                    if let Ok(folder) = res {
-                        if let Some(p) = folder.path() {
-                            let p = p.to_string_lossy().into_owned();
-                            st.update(|c| c.source.path = p.clone());
-                            row2.set_text(&p);
-                            refresh_media(&st);
-                        }
-                    }
-                    // 对话框关了就回到设置面板（配置已即时保存 ✓）
-                    show(&st);
-                },
-            );
-        });
+    // ---------------- 素材目录（方案 A：一行 + 折叠列表）----------------
+    // 收起时只占 1 行（副标题显示摘要），展开后逐目录列出 + 添加 / 重新扫描。
+    // 这样目录再多也不会把面板撑高 —— 这是选方案 A 的原因。
+    let dirs: Vec<String> = state.config.borrow().source.paths.clone();
+    let dir_exp = adw::ExpanderRow::builder().title("素材目录").build();
+    dir_exp.set_subtitle(&dir_summary(&dirs));
+    for d in &dirs {
+        let row = adw::ActionRow::builder().title(d.as_str()).build();
+        // 目录不存在/未挂载 → 置灰并标注，但**配置保留**（NAS 掉线不该丢配置）
+        if !std::path::Path::new(d).is_dir() {
+            row.add_css_class("dim-label");
+            row.set_subtitle("不可用（未挂载或已删除？）");
+        }
+        let btn = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .valign(gtk::Align::Center)
+            .tooltip_text("移除该目录")
+            .build();
+        {
+            let st = state.clone();
+            let p = d.clone();
+            btn.connect_clicked(move |_| {
+                st.update(|c| c.source.paths.retain(|x| *x != p));
+                refresh_media(&st);
+                // 面板每次打开都重建（有意设计）→ 这里直接重建以刷新列表
+                show(&st);
+            });
+        }
+        row.add_suffix(&btn);
+        dir_exp.add_row(&row);
     }
-    dir_row.set_text(&state.config.borrow().source.path);
-    dir_row.add_suffix(&dir_browse);
     {
-        // 手动输入路径：回车（EntryRow 的 apply 信号）同样生效
+        let add = adw::ActionRow::builder()
+            .title("添加目录…")
+            .subtitle("选择后会先统计素材数量，过多会先提示")
+            .build();
+        add.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
+        add.set_activatable(true);
         let st = state.clone();
-        let row2 = dir_row.clone();
-        dir_row.connect_apply(move |_| {
-            let p = row2.text().trim().to_string();
-            if p.is_empty() {
-                return;
+        add.connect_activated(move |_| pick_dir(&st));
+        dir_exp.add_row(&add);
+    }
+    {
+        // 手动输入路径（保留原来 EntryRow 的能力）
+        let entry = adw::EntryRow::builder().title("或手动输入路径后回车").build();
+        let st = state.clone();
+        entry.connect_apply(move |r| {
+            let p = r.text().trim().to_string();
+            if !p.is_empty() {
+                add_dir(&st, p);
             }
-            let p = crate::config::expand_user(&p).to_string_lossy().into_owned();
-            st.update(|c| c.source.path = p.clone());
-            row2.set_text(&p);
+        });
+        dir_exp.add_row(&entry);
+    }
+    {
+        // 手动加过文件、或目录 mtime 没变时用
+        let rescan = adw::ActionRow::builder().title("重新扫描素材").build();
+        rescan.add_prefix(&gtk::Image::from_icon_name("view-refresh-symbolic"));
+        rescan.set_activatable(true);
+        let st = state.clone();
+        rescan.connect_activated(move |_| {
+            // **先删缓存**再扫：否则 TTL 内会命中缓存，用户会以为"点了没刷新"
+            crate::media::source::local::invalidate_scan_cache();
             refresh_media(&st);
         });
+        dir_exp.add_row(&rescan);
     }
-    g_media.add(&dir_row);
+    g_media.add(&dir_exp);
 
     // ---------------- 显示 ----------------
     let g_display = adw::PreferencesGroup::builder()
@@ -1075,4 +1084,120 @@ fn spin_row(
         }
     });
     row
+}
+
+/// 超过这个数量就先提示用户"扫描需要等待"（避免大目录像卡死）
+const BIG_DIR_WARN: usize = 500;
+
+thread_local! {
+    /// 「添加目录」后台统计完成后的回调需要回到主线程取 AppState。
+    /// `MainContext::invoke` 的闭包必须 `Send`，而 `Rc<AppState>` 不是 Send，
+    /// 所以不捕获它 —— 在主线程的 thread_local 里取（与 library.rs 同一手法）。
+    static ADD_STATE: std::cell::RefCell<Option<Rc<AppState>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 「素材目录」副标题摘要：1 个显示路径，多个显示个数（收起时也只占一行）
+fn dir_summary(dirs: &[String]) -> String {
+    match dirs.len() {
+        0 => "未设置".to_string(),
+        1 => dirs[0].clone(),
+        n => format!("{n} 个目录"),
+    }
+}
+
+/// 选目录 → 交给 add_dir。
+/// 对话框必须**独立开**（不能把设置面板当父窗口）：面板是 layer-shell surface，
+/// 设为 transient parent 会触发协议错误被合成器踢掉；而且面板在 Overlay 层会挡住
+/// 普通 toplevel 对话框。所以先收起面板 → 无父窗口打开 → 结束后把面板放回来。
+fn pick_dir(state: &Rc<AppState>) {
+    hide(state, "打开目录对话框");
+    let st = state.clone();
+    let dialog = gtk::FileDialog::builder().title("选择媒体目录").build();
+    // 必须 select_folder（选目录）；open() 是选文件 → 会选到文件导致扫描失败
+    dialog.select_folder(
+        None::<&gtk::Window>,
+        gio::Cancellable::NONE,
+        move |res| {
+            if let Ok(folder) = res {
+                if let Some(p) = folder.path() {
+                    add_dir(&st, p.to_string_lossy().into_owned());
+                    return; // add_dir 内部会重建面板
+                }
+            }
+            show(&st);
+        },
+    );
+}
+
+/// 添加一个目录：先去重，再**后台统计数量**（大目录的 walk 绝不能放主线程，
+/// 否则面板会卡死几秒）→ 超过阈值先弹提示给用户预期，否则直接加入。
+fn add_dir(state: &Rc<AppState>, path: String) {
+    let p = crate::config::expand_user(path.trim())
+        .to_string_lossy()
+        .into_owned();
+    if p.is_empty() {
+        show(state);
+        return;
+    }
+    if state.config.borrow().source.paths.iter().any(|d| *d == p) {
+        crate::info!("目录已在列表中，忽略重复添加：{p}");
+        show(state);
+        return;
+    }
+    let recursive = state.config.borrow().source.recursive;
+    ADD_STATE.with(|s| *s.borrow_mut() = Some(state.clone()));
+    let ctx = glib::MainContext::default();
+    let p2 = p.clone();
+    std::thread::Builder::new()
+        .name("omaframe-count".into())
+        .spawn(move || {
+            let n = crate::media::source::local::count_media(std::path::Path::new(&p2), recursive);
+            ctx.invoke(move || {
+                let st = ADD_STATE.with(|s| s.borrow().clone());
+                let Some(st) = st else {
+                    crate::warn!("添加目录：主线程状态缺失，跳过");
+                    return;
+                };
+                if n > BIG_DIR_WARN {
+                    crate::info!("目录 {p2} 含 {n} 个素材，先提示用户");
+                    hide(&st, "素材过多提示");
+                    let dlg = adw::MessageDialog::builder()
+                        .heading("素材较多")
+                        .body(format!(
+                            "该目录包含 {n} 个素材。\n\n首次扫描需要一些时间（之后会缓存，重启不再全量重扫）。\n仍要添加吗？"
+                        ))
+                        .build();
+                    dlg.add_response("cancel", "取消");
+                    dlg.add_response("add", "添加");
+                    dlg.set_response_appearance("add", adw::ResponseAppearance::Suggested);
+                    let st2 = st.clone();
+                    let p3 = p2.clone();
+                    // 第一个参数是"只监听某个 detail"的过滤器，None = 监听全部
+                    dlg.connect_response(None, move |d: &adw::MessageDialog, r: &str| {
+                        d.close();
+                        if r == "add" {
+                            commit_dir(&st2, &p3);
+                        }
+                        show(&st2);
+                    });
+                    dlg.present();
+                } else {
+                    commit_dir(&st, &p2);
+                }
+            });
+        })
+        .ok();
+}
+
+/// 真正写入配置 + 重扫 + 重建面板（列表随之刷新）
+fn commit_dir(state: &Rc<AppState>, p: &str) {
+    let p = p.to_string();
+    state.update(|c| {
+        if !c.source.paths.iter().any(|d| *d == p) {
+            c.source.paths.push(p.clone());
+        }
+    });
+    refresh_media(state);
+    show(state);
 }
