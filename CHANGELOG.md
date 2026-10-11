@@ -3,6 +3,28 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.1] - 2026-10-11
+
+### 修复：设置页「素材目录」三个问题（用户实测反馈）
+1. **添加/移除目录后列表不刷新** —— 根因是 `show()` 在面板**已可见**时会 early-return
+   （有意设计：重复点托盘图标不重建），所以在面板里点按钮改配置后再调 `show()` 是**空操作**。
+   新增 `rebuild()`（先 `hide()` 用 `take()` 清引用、再 `show()`），并把**所有**改配置后的
+   刷新点（移除按钮 / 手动输入 / 重复目录提示 / 写入配置 / `>500` 提示关闭后）都改用它。
+2. **删掉最后一个目录会被"复活"** —— `paths` 空 + `path` 非空 恰好是**"旧配置迁移"的判据**，
+   所以 `sanitize()` 会从 `path` 镜像里把它恢复回来。移除处理器现在在 `paths` 变空时
+   **同时清空镜像** → 回落到默认目录（`~/Pictures`），而不是复活被删的那个。
+   新增回归测试 `removing_last_dir_falls_back_to_default_not_mirror` 锁住该行为。
+3. **手动输入路径后回车无法添加** —— 日志证据：`目录已在列表中` / `含 N 个素材` 各 0 次，
+   说明回车**根本没进处理器**：`adw::EntryRow` 的 `apply`（回车）在 `ExpanderRow` 里
+   被行激活逻辑吞掉了（同一个 EntryRow 放在 `PreferencesGroup` 里回车是正常的）。
+   现在手动输入行右侧加了**「添加」按钮**作为可靠入口，回车保留为"顺手可用"；
+   并加了 `手动添加目录：{p:?}` 的 debug 日志，下次可直接区分"没进处理器"与"进了被拦下"。
+
+> 顺带核实（均非 bug）：删除按钮**生效且持久化**（配置里 `paths` 已不含被删目录）；
+> `refresh_media()` → `player.reload_source()` 会触发重扫，增删目录后轮换会跟着更新。
+
+54/54 测试通过、0 编译警告、发布自检通过。
+
 ## [0.9.0] - 2026-10-11
 
 ### 新增：支持多个素材目录
@@ -732,6 +754,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.9.1]: https://github.com/playGitboy/Omaframe/releases/tag/v0.9.1
 [0.9.0]: https://github.com/playGitboy/Omaframe/releases/tag/v0.9.0
 [0.8.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.5
 [0.8.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.4

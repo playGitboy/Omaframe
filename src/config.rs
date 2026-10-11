@@ -786,6 +786,28 @@ mod multi_dir_tests {
         assert!(normalize_dirs(&[]).is_empty());
     }
 
+    /// **删掉最后一个目录**时不能"从 path 镜像里恢复" ——
+    /// `paths` 空 + `path` 非空 恰好是"旧配置迁移"的判据，所以移除处理器
+    /// 会把镜像一起清空；这里锁住该行为（否则删了又回来）。
+    #[test]
+    fn removing_last_dir_falls_back_to_default_not_mirror() {
+        let mut c = Config::default();
+        c.source.paths = vec!["/tmp/last-one".into()];
+        c.source.path = "/tmp/last-one".into();
+        c.sanitize();
+        assert_eq!(c.source.paths, vec!["/tmp/last-one".to_string()]);
+        // 模拟移除最后一个目录（remove 处理器：paths 清空 + 镜像也清空）
+        c.source.paths.clear();
+        c.source.path = String::new();
+        c.sanitize();
+        assert_ne!(
+            c.source.paths,
+            vec!["/tmp/last-one".to_string()],
+            "不能从 path 镜像里把被删的目录恢复回来"
+        );
+        assert!(!c.source.paths.is_empty(), "应回落到默认目录");
+    }
+
     /// 旧配置（只有 path）→ 零迁移；path 始终镜像 paths[0]（旧版本可降级）。
     #[test]
     fn legacy_path_migrates_and_mirrors() {

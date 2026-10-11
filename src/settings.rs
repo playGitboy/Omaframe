@@ -135,6 +135,17 @@ pub fn quit(state: &Rc<AppState>) {
     }
 }
 
+/// **配置改完要刷新面板时用它**（不是 `show()`）。
+///
+/// `show()` 在面板**已可见**时会 early-return（设计如此：已打开就只 present，
+/// 避免重复点托盘图标时重建）—— 所以在面板里点按钮改配置后再调 `show()` 是**空操作**，
+/// 列表不会刷新。`rebuild()` 先 `hide()`（`take()` 清引用）再 `show()`，
+/// 这样才会走"重建"分支。（hide 在引用已是 None 时是空操作，所以到处调都安全。）
+pub fn rebuild(state: &Rc<AppState>) {
+    hide(state, "配置已改，重建");
+    show(state);
+}
+
 pub fn hide(state: &Rc<AppState>, why: &str) {
     let taken = state.settings_window.borrow_mut().take();
     if let Some(p) = taken {
@@ -414,10 +425,17 @@ fn build(state: &Rc<AppState>) -> Panel {
             let st = state.clone();
             let p = d.clone();
             btn.connect_clicked(move |_| {
-                st.update(|c| c.source.paths.retain(|x| *x != p));
+                crate::info!("移除素材目录：{p}");
+                st.update(|c| {
+                    c.source.paths.retain(|x| *x != p);
+                    if c.source.paths.is_empty() {
+                        // 删掉最后一个目录时把镜像也清空，否则 sanitize 会"从 path 恢复"
+                        // （paths 空 + path 非空 是"旧配置迁移"的判据）→ 删了又回来
+                        c.source.path = String::new();
+                    }
+                });
                 refresh_media(&st);
-                // 面板每次打开都重建（有意设计）→ 这里直接重建以刷新列表
-                show(&st);
+                rebuild(&st);
             });
         }
         row.add_suffix(&btn);
@@ -435,15 +453,34 @@ fn build(state: &Rc<AppState>) -> Panel {
         dir_exp.add_row(&add);
     }
     {
-        // 手动输入路径（保留原来 EntryRow 的能力）
-        let entry = adw::EntryRow::builder().title("或手动输入路径后回车").build();
-        let st = state.clone();
-        entry.connect_apply(move |r| {
-            let p = r.text().trim().to_string();
-            if !p.is_empty() {
-                add_dir(&st, p);
-            }
-        });
+        // 手动输入路径。
+        // **必须配一个按钮**：`EntryRow` 的 `apply`（回车）在 `ExpanderRow` 里可能被
+        // 行激活逻辑吞掉（同样的 EntryRow 放在 PreferencesGroup 里回车是正常的，
+        // 放进 ExpanderRow 就不生效了）→ 回车保留为"顺手可用"，但真正可靠的是按钮。
+        let entry = adw::EntryRow::builder().title("或手动输入路径").build();
+        let add_btn = gtk::Button::builder()
+            .label("添加")
+            .valign(gtk::Align::Center)
+            .tooltip_text("把输入的路径加入列表")
+            .build();
+        {
+            let st = state.clone();
+            let e = entry.clone();
+            let submit = move || {
+                let p = e.text().trim().to_string();
+                crate::debug!("手动添加目录：{p:?}");
+                if !p.is_empty() {
+                    add_dir(&st, p);
+                }
+            };
+            add_btn.connect_clicked({
+                let submit = submit.clone();
+                move |_| submit()
+            });
+            // 回车也接上（能生效就当顺手）
+            entry.connect_apply(move |_| submit());
+        }
+        entry.add_suffix(&add_btn);
         dir_exp.add_row(&entry);
     }
     {
@@ -1137,12 +1174,12 @@ fn add_dir(state: &Rc<AppState>, path: String) {
         .to_string_lossy()
         .into_owned();
     if p.is_empty() {
-        show(state);
+        rebuild(state);
         return;
     }
     if state.config.borrow().source.paths.iter().any(|d| *d == p) {
         crate::info!("目录已在列表中，忽略重复添加：{p}");
-        show(state);
+        rebuild(state);
         return;
     }
     let recursive = state.config.borrow().source.recursive;
@@ -1179,7 +1216,7 @@ fn add_dir(state: &Rc<AppState>, path: String) {
                         if r == "add" {
                             commit_dir(&st2, &p3);
                         }
-                        show(&st2);
+                        rebuild(&st2);
                     });
                     dlg.present();
                 } else {
@@ -1199,5 +1236,5 @@ fn commit_dir(state: &Rc<AppState>, p: &str) {
         }
     });
     refresh_media(state);
-    show(state);
+    rebuild(state);
 }
