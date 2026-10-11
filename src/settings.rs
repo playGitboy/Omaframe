@@ -481,7 +481,7 @@ fn build(state: &Rc<AppState>) -> Panel {
 
     // ---------------- 轮换 ----------------
     let g_slide = adw::PreferencesGroup::builder()
-        .title("轮换")
+        .title("轮换与视频")
         .build();
     g_slide.add(&switch_row(
         "启用",
@@ -506,9 +506,9 @@ fn build(state: &Rc<AppState>) -> Panel {
     ));
 
     // ---------------- 视频 ----------------
-    let g_video = adw::PreferencesGroup::builder()
-        .title("视频")
-        .build();
+    // 「视频」与「轮换」同属"怎么播" → **复用同一个 GObject** 合成一组
+    // （clone 是引用计数而非深拷贝；行仍按创建顺序追加：轮换的行在前，视频的行在后）
+    let g_video = g_slide.clone();
     g_video.add(&switch_row(
         "自动播放",
         state.clone(),
@@ -760,7 +760,6 @@ fn build(state: &Rc<AppState>) -> Panel {
 
         page.add(&g_media);
         page.add(&g_slide);
-        page.add(&g_video);
         page.add(&g_tr);
     }
 
@@ -800,8 +799,10 @@ fn build(state: &Rc<AppState>) -> Panel {
 
     // ---------------- 项目链接 ----------------
     // 放在设置页最下方，点击用系统默认浏览器打开项目仓库
+    // 底部两项（项目主页 / 退出）**合成一组**：原来是无标题的两个独立卡片，
+    // 视觉上很碎；合起来也更符合"关于与退出"这一主题。
+    let g_bottom = adw::PreferencesGroup::builder().build();
     {
-        let g_link = adw::PreferencesGroup::builder().build();
         let row = adw::ActionRow::builder()
             .title("项目主页")
             .subtitle(env!("CARGO_PKG_REPOSITORY"))
@@ -812,8 +813,7 @@ fn build(state: &Rc<AppState>) -> Panel {
         row.connect_activated(move |_| {
             crate::open_url(&url);
         });
-        g_link.add(&row);
-        page.add(&g_link);
+        g_bottom.add(&row);
     }
 
     // ---------------- 退出 ----------------
@@ -821,7 +821,6 @@ fn build(state: &Rc<AppState>) -> Panel {
     // 用 ActionRow + Button（不用 adw::ButtonRow，那个要 libadwaita 1.5 特性，
     // 会把构建门槛从 1.4 抬到 1.5）。
     {
-        let g_quit = adw::PreferencesGroup::builder().build();
         let row = adw::ActionRow::builder()
             .title("退出")
             .subtitle("关闭桌面相框（当前配置会先保存）")
@@ -836,8 +835,8 @@ fn build(state: &Rc<AppState>) -> Panel {
             crate::info!("设置页点击「退出」");
             quit(&st);
         });
-        g_quit.add(&row);
-        page.add(&g_quit);
+        g_bottom.add(&row);
+        page.add(&g_bottom);
     }
     let anchor = adw::ComboRow::builder()
         .title("默认位置")

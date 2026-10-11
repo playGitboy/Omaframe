@@ -339,6 +339,21 @@ pub fn run(args: &[String]) -> Result<u8, String> {
                 monitor.on_change(move |visible| p2.set_active(visible));
                 *app_state.visibility.borrow_mut() = Some(monitor);
 
+                // **显示器热插拔 / 分辨率·缩放变化**：重新按当前显示器贴靠。
+                // 不监听的话：拔掉相框所在的那台显示器后，layer surface 仍挂在已移除的
+                // output 上 → 相框直接消失；插上新显示器也不会重新摆放，只能重启程序。
+                // 监听 monitors 这个 GListModel 的 items-changed 即可（GTK4 标准做法）。
+                if let Some(display) = gdk::Display::default() {
+                    let p3 = player.clone();
+                    display.monitors().connect_items_changed(move |_, _, _, _| {
+                        crate::info!("显示器列表变化 → 重新贴靠与覆盖判定");
+                        p3.apply_anchor();
+                        p3.refresh_visibility_rect();
+                        // 缩放可能一起变了 → 按新 scale 重解码（否则图会糊）
+                        p3.refresh_scale();
+                    });
+                }
+
                 // 弹出面板：别的窗口拿到焦点（或换工作区）就自动收起
                 let st_panel = app_state.clone();
                 crate::hypr::on_focus_change(move |payload| {

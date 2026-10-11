@@ -41,6 +41,8 @@ pub struct MediaPlayer {
     current_is_video: Cell<bool>,
     /// 下一帧是**本段视频的首帧**（只有首帧才允许起转场）
     video_first_frame: Cell<bool>,
+    /// 连续视频解码失败次数：整批都播不了时停止空转
+    video_error_streak: Cell<u32>,
     /// 拖动起点快照：Move = (x, y)，Resize = (max_w, max_h, 宽高比)
     drag: RefCell<DragState>,
 }
@@ -119,6 +121,7 @@ impl MediaPlayer {
             auto_pick_memo: RefCell::new(None),
             current_is_video: Cell::new(false),
             video_first_frame: Cell::new(false),
+            video_error_streak: Cell::new(0),
             drag: RefCell::new(DragState::default()),
         });
 
@@ -449,6 +452,7 @@ impl MediaPlayer {
         match ev {
             E::Eos => {
                 crate::debug!("视频播放结束");
+                self.video_error_streak.set(0);
                 // complete 模式：播完切下一项；定时模式由轮换计时器负责
                 if self.state.config.borrow().video.mode == "complete" {
                     self.slides.stop();
@@ -458,8 +462,25 @@ impl MediaPlayer {
                     }
                 }
             }
-            E::Error(msg) => crate::warn!("视频错误：{msg}"),
+            E::Error(msg) => {
+                crate::warn!("视频错误：{msg}");
+                // **必须前进**：解码失败的视频不会再发 Eos，complete 模式下轮换会
+                // 永远卡在这一项（跨发行版常见：缺某个编解码器）。
+                // 但不能无限空转 —— 连续失败达到素材总数说明整批都播不了，
+                // 停下并告警，别再一个个跳。
+                let n = self.video_error_streak.get().wrapping_add(1);
+                self.video_error_streak.set(n);
+                let total = self.lib.count().max(1) as u32;
+                if n >= total {
+                    crate::warn!("连续 {n} 个视频解码失败（共 {total} 项），停止轮换以免空转");
+                    self.slides.stop();
+                } else {
+                    self.slides.stop();
+                    self.step(1);
+                }
+            }
             E::Playing(p) => {
+                self.video_error_streak.set(0);
                 if let Some(w) = self.state.window() {
                     w.view.set_running(p);
                 }
@@ -615,6 +636,17 @@ impl MediaPlayer {
     /// 这里在打开设置面板时调用：指纹没变就什么都不做（不白重载），
     /// 变了就 `load_frame()` 整体重建（切片缓存从空开始，会按
     /// path+mtime+size+版本 的模型缓存判断是否需要重新分析）。
+    /// 显示器**缩放变化**后按新 scale 重解码当前素材。
+    /// 解码盒是按当时显示器 scale 算的（见 apply_image），缩放变了不重解码 → 图会糊。
+    /// 视频不处理：它有自己的帧管线，下一帧就按新尺寸出图。
+    pub fn refresh_scale(self: &Rc<Self>) {
+        if self.current_is_video.get() {
+            return;
+        }
+        crate::debug!("显示器缩放/尺寸变化 → 按新 scale 重解码当前素材");
+        self.show_current();
+    }
+
     pub fn refresh_frame_index(self: &Rc<Self>) {
         let dir = crate::config::frame_dir();
         let mut names: Vec<String> = Vec::new();

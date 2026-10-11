@@ -3,6 +3,47 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.5] - 2026-10-11
+
+### 兼容性（跨发行版）
+- **托盘图标搜索路径不再写死**：改按 XDG 规范读 `XDG_DATA_DIRS`（缺省才回落
+  `/usr/local/share:/usr/share`）。影响 NixOS、Flatpak 沙盒、自定义 prefix
+  （`/opt`、`/app/share`）—— 这些环境原来解析不到图标主题，只能退回自绘 `IconPixmap`。
+- **ImageMagick 兼容 IM6 / IM7**：IM7 是 `magick`，IM6（Debian/Ubuntu 默认）只有
+  `convert`。原来只认 `magick` → 这些系统上 HEIC/AVIF 的外部解码兜底直接失效。
+- **外部解码器先探测再调用**（复用 `video::has_binary`）：原来缺工具时每个文件都要
+  白 spawn 一次失败进程。
+
+### 修复：设置面板窗口生命周期
+- **面板窗口累积（内存只涨不降）**：面板每次打开都重建（有意设计：重读配置 +
+  重扫素材目录），但 `hide()` 只 `set_visible(false)`；窗口已挂到 GApplication
+  （GtkApplication 持有引用）→ 旧窗口不释放 → 反复开关持续累积控件树。
+  现在 `hide()` 在 idle 中真正 `destroy()`。
+- **`set_application` 时机错误**：原来在 `present()` 之后才挂 Application
+  （窗口已 realize，跟踪错位）。现移到 `present()` 之前，并用
+  `gio::Application::default()` → 托盘 / 控制通道 / 命令行三种打开方式都能正确挂上。
+
+### 健壮性
+- **视频解码失败会让轮换永久卡死**：`E::Error` 原来只打警告，而解码失败的视频
+  不会再发 `Eos`，complete 模式下轮换就卡在这一项（跨发行版常见：缺某个编解码器）。
+  现在错误也**前进**，并带**防空转保护**（连续失败达到素材总数 → 停止轮换并告警）。
+- **新增显示器热插拔 / 缩放变化监听**：原来全库没有任何 `monitors` 变化监听 ——
+  拔掉相框所在显示器后 layer surface 仍挂在已移除的 output 上 → **相框消失**，
+  只能重启。现在监听 `display.monitors()` 的 `items-changed` → 重新贴靠 +
+  刷新覆盖判定 + 按新 scale **重解码**当前素材（图片；视频由自身帧管线处理）。
+
+### 设置页紧凑（10 组 → 7 组）
+```
+媒体 → 轮换与视频 → 转场 → 相框 → 尺寸与位置 → 常规 → 项目主页+退出
+```
+- 「视频」并入「轮换」→「轮换与视频」；
+- 「尺寸」并入「桌面位置」→「尺寸与位置」；
+- 「项目主页」+「退出」两个无标题卡片合成一组。
+合并一律用 `clone()` 复用同一个 GObject（引用计数而非深拷贝），
+**不搬任何行的创建代码** —— 这类"移动行"的重构最容易出错。
+
+48/48 测试通过、0 编译警告、发布自检通过。
+
 ## [0.8.4] - 2026-10-06
 
 ### 兼容性 / 健壮性（跨发行版）
@@ -657,6 +698,7 @@ CPU 逐像素扭曲则违背"低开销"原则。详见 docs/KEY-FINDINGS.md 的�
 - 菜单项 `Categories` 去掉重复主分类（原值会让它在菜单里出现两次）
 - 消除全部编译警告（0 warning）
 
+[0.8.5]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.5
 [0.8.4]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.4
 [0.8.3]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.3
 [0.8.2]: https://github.com/playGitboy/Omaframe/releases/tag/v0.8.2
