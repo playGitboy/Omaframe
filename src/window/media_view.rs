@@ -44,6 +44,12 @@ pub enum Effect {
     Ripple,
     /// 四角涟漪：算法同水滴涟漪，但**每次从随机一个角**作为中心起波
     CornerRipple,
+    /// 柔光扫过：交叉淡入淡出 + 一道柔光带横向扫过
+    LightSweep,
+    /// 百叶帘：新图分成 6 条依次揭示
+    Blinds,
+    /// 快门闪光：过渡中点轻微过曝（白闪），像按下快门
+    Flash,
 }
 
 impl Effect {
@@ -55,6 +61,9 @@ impl Effect {
             "roll" => Effect::Roll,
             "ripple" => Effect::Ripple,
             "corner_ripple" => Effect::CornerRipple,
+            "light_sweep" => Effect::LightSweep,
+            "blinds" => Effect::Blinds,
+            "flash" => Effect::Flash,
             _ => Effect::Fade,
         }
     }
@@ -77,10 +86,57 @@ struct TransFrame {
     cur_anchor: (f64, f64),
     /// 涟漪：扩散波前的几何（像素半径 + 圆心相对内孔的比例 0..1）
     ripple: Option<RippleGeo>,
+    /// 柔光扫过：`(光带位置 0..1, 亮度)`，None = 不画
+    sweep: Option<(f64, f64)>,
+    /// 快门闪白：白层 alpha（两端 0、中点峰值）
+    veil: Option<f64>,
+    /// 百叶帘：`(条数, 揭示进度)`
+    bands: Option<(u32, f64)>,
     /// 推动类（slide/roll）：两张图都先**铺满当前内孔**再整体平移。
     /// 相框尺寸随素材比例变化 → 两帧矩形通常不同；若各按自己矩形推，
     /// 必然"缝对不齐 + 盖不满内孔"（中间透出桌面）。铺满同一块内孔则永远严丝合缝。
     push: bool,
+}
+
+/// 百叶帘条数（固定 6：成本上界固定，不随分辨率增长）
+const BLINDS_COUNT: u32 = 6;
+/// 快门闪白的峰值强度（0.45：能看出"闪"但不刺眼）
+const FLASH_PEAK: f64 = 0.45;
+
+/// 快门闪白强度：两端 0、中点峰值（sin² 曲线，两端平滑、中间快）
+fn veil_alpha(p: f64) -> f64 {
+    (std::f64::consts::PI * p.clamp(0.0, 1.0)).sin().powi(2) * FLASH_PEAK
+}
+
+/// 柔光带的亮度：中点最亮、两端为 0（0.7 次幂让"亮"持续得稍久一点）
+fn sweep_alpha(p: f64) -> f64 {
+    (std::f64::consts::PI * p.clamp(0.0, 1.0)).sin().powf(0.7) * 0.55
+}
+
+/// 柔光带位置：从画面左侧外扫到右侧外（-0.35 → 1.35）
+fn sweep_pos(p: f64) -> f64 {
+    -0.35 + p.clamp(0.0, 1.0) * 1.70
+}
+
+/// 百叶帘第 `i` 条的揭示进度。
+/// 相位错开：相邻条依次揭开；**p=1 时每一条都必须恰好为 1**
+/// （否则最后一帧还残留旧图 —— 涟漪就踩过这个坑）。
+fn blinds_strip_progress(count: u32, p: f64, i: u32) -> f64 {
+    let n = count.max(1) as f64;
+    let i = i as f64;
+    let lead = i / n * 0.6; // 错开量：最后一条最多滞后 60% 的进度
+    let span = (1.0 - 0.6 * (n - 1.0) / n).max(0.001);
+    ((p.clamp(0.0, 1.0) - lead) / span).clamp(0.0, 1.0)
+}
+
+/// 百叶帘第 `i` 条的矩形 `(顶部偏移, 高度)`。
+/// **边界取整**：相邻条严格共用同一条边界 —— 不取整会在条与条之间留 1px 缝
+/// （与九宫格接缝是同一类问题）。
+fn blinds_strip_rect(count: u32, i: u32, h: f64) -> (f64, f64) {
+    let n = count.max(1) as f64;
+    let top = (i as f64 / n * h).round();
+    let bot = ((i as f64 + 1.0) / n * h).round();
+    (top, (bot - top).max(0.0))
 }
 
 /// 涟漪波前几何。
@@ -269,6 +325,9 @@ impl TransAnim {
             prev_anchor: (0.5, 0.5),
             cur_anchor: (0.5, 0.5),
             ripple: None,
+            sweep: None,
+            veil: None,
+            bands: None,
             push: false,
         };
         match self.kind {
@@ -312,6 +371,24 @@ impl TransAnim {
                 // 呼吸式微缩放：旧图被波前推得略缩，新图从略大收回 → 有"波动"
                 f.prev_s = (1.0 - 0.025 * p, 1.0 - 0.025 * p);
                 f.cur_s = (1.035 - 0.035 * p, 1.035 - 0.035 * p);
+            }
+            // 柔光扫过：交叉淡入淡出 + 一道柔光带横向扫过（亮度中点达峰）
+            Effect::LightSweep => {
+                f.prev_a = 1.0 - p;
+                f.cur_a = p;
+                f.sweep = Some((sweep_pos(p), sweep_alpha(p)));
+            }
+            // 百叶帘：新图分 6 条依次揭示（旧图保持不透明，被逐条盖住）
+            Effect::Blinds => {
+                f.prev_a = 1.0;
+                f.cur_a = 1.0;
+                f.bands = Some((BLINDS_COUNT, p));
+            }
+            // 快门闪光：两侧交叉 + 中点一瞬过曝（白闪）
+            Effect::Flash => {
+                f.prev_a = 1.0 - p;
+                f.cur_a = p;
+                f.veil = Some(veil_alpha(p));
             }
             // 垂直卷帘：新图自上而下揭开，旧图下移
             Effect::Roll => {
@@ -479,17 +556,12 @@ mod imp {
                 let tframe = self.anim.borrow().as_ref().map(|a| {
                     a.frame(media_rect.width() as f64, media_rect.height() as f64)
                 });
+                // ---- 旧图（残影效果会叠多层） ----
                 if let (Some(tf), Some(prev)) = (tframe.as_ref(), self.prev_tex.borrow().clone()) {
                     if tf.prev_a > 0.004 {
-                        // 上一张按**它自己的矩形**绘制（不是新矩形）：相框尺寸会随素材比例变，
-                        // 用新矩形画旧图会尺寸不匹配、盖不满内孔 → 中间透出桌面 = "闪一下"。
-                        // 推动类：把旧图 **cover 铺满当前内孔**（按需裁掉外溢，不拉伸变形），
-                        // 这样两张图铺在同一块矩形上做整体平移 → 任何时刻都严丝合缝。
-                        // 其余效果：按旧图**当时自己的矩形**画（换素材时相框尺寸会变，
-                        // 用新矩形画旧图会盖不满内孔 → 中间透出桌面）。
                         // 推动类与涟漪都要"铺满当前内孔"：
-                        //  · 推动类：两张图必须在同一块矩形上做整体平移才严丝合缝；
-                        //  · 涟漪：波前那条半透明细带叠在旧图上，旧图必须**盖满**内孔，
+                        //  · 推动类：两张图必须在同一块矩形上整体平移才严丝合缝；
+                        //  · 涟漪：波前那条半透明细带叠在旧图上，旧图必须盖满内孔，
                         //    否则细带下面露出桌面 → 新图外侧发白（竖屏→横屏尤其明显）。
                         let prev_bleed = if tf.push || tf.ripple.is_some() {
                             let (tx, ty) = (prev.width() as f64, prev.height() as f64);
@@ -516,6 +588,9 @@ mod imp {
                             )
                         };
                         snapshot.save();
+                        // 残影：旧图叠 TRAIL_LAYERS 层（缩放递增、透明度递减）→ 动态模糊的替身；
+                        // 其它效果只有 1 层（add = 0、权重 1）。
+                        snapshot.save();
                         snapshot.push_opacity(tf.prev_a);
                         if (tf.prev_t.0, tf.prev_t.1) != (0.0, 0.0) {
                             snapshot.translate(&gtk::graphene::Point::new(
@@ -524,21 +599,20 @@ mod imp {
                             ));
                         }
                         if (tf.prev_s.0 - 1.0).abs() > 1e-6 || (tf.prev_s.1 - 1.0).abs() > 1e-6 {
-                            let ax = media_rect.x() as f64 + tf.prev_anchor.0 * media_rect.width() as f64;
-                            let ay = media_rect.y() as f64 + tf.prev_anchor.1 * media_rect.height() as f64;
+                            let ax = media_rect.x() as f64
+                                + tf.prev_anchor.0 * media_rect.width() as f64;
+                            let ay = media_rect.y() as f64
+                                + tf.prev_anchor.1 * media_rect.height() as f64;
                             snapshot.translate(&gtk::graphene::Point::new(ax as f32, ay as f32));
                             snapshot.scale(tf.prev_s.0 as f32, tf.prev_s.1 as f32);
                             snapshot.translate(&gtk::graphene::Point::new(-ax as f32, -ay as f32));
                         }
                         snapshot.append_texture(&prev, &prev_bleed);
-                        // **必须 pop**：GTK4 里 save/restore 与 push_*/pop 是两套独立的栈。
-                        // 少了这一句，未闭合的 opacity 组会把**之后画的遮罩与相框**一起吞进去
-                        // 并乘上 prev_a（1→0）→ 相框在转场期间消失/闪屏，且新图也被压到透明、
-                        // 要等动画结束才"瞬间弹出"（用户报的两个现象其实是同一个 bug）。
                         snapshot.pop();
                         snapshot.restore();
                     }
                 }
+                // ---- 新图 ----
                 if let Some(tex) = self.texture.borrow().clone() {
                     snapshot.save();
                     if let Some(tf) = tframe.as_ref() {
@@ -547,15 +621,11 @@ mod imp {
                             // **涟漪**：把新图按同心圈层分别绘制（半径由大到小，
                             // 后画的盖住先画的）→ 每层只露出自己那一圈，
                             // 且每层缩放相位相反、幅度递减 → 交界处错位 = 水面波动。
-                            // 这些层都锚定在**波前**上，所以波纹随波前一起向外走。
-                            // 最外层的圆半径就是波前 → 它同时充当"揭示边界"，
-                            // 不需要再单独压一个圆形裁剪（少一次 push/pop，也少一处失衡风险）。
                             for (rk, sc, alpha) in ripple_bands(&rf) {
                                 let r = (rf.r * rk) as f32;
                                 let cx = media_rect.x() as f64 + rf.cx * media_rect.width() as f64;
                                 let cy = media_rect.y() as f64 + rf.cy * media_rect.height() as f64;
                                 snapshot.save();
-                                // 各层不透明度不同（外淡内实）→ 波前柔化，不出现硬边
                                 snapshot.push_opacity(alpha);
                                 snapshot.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(
                                     gtk::graphene::Rect::new(
@@ -566,17 +636,44 @@ mod imp {
                                     ),
                                     r,
                                 ));
-                                // 该层的缩放（以落点为锚点）
-                                snapshot.translate(&gtk::graphene::Point::new(
-                                    cx as f32, cy as f32,
-                                ));
+                                snapshot.translate(&gtk::graphene::Point::new(cx as f32, cy as f32));
                                 snapshot.scale(sc as f32, sc as f32);
                                 snapshot.translate(&gtk::graphene::Point::new(
                                     -cx as f32, -cy as f32,
                                 ));
                                 snapshot.append_texture(&tex, &bleed);
                                 snapshot.pop(); // rounded clip
-                                snapshot.pop(); // opacity（本层）
+                                snapshot.pop(); // 本层 opacity
+                                snapshot.restore();
+                            }
+                        } else if let Some((count, bp)) = tf.bands {
+                            // **百叶帘**：逐条揭示。条边界取整 → 相邻条严格共用同一条边界，
+                            // 不会在条与条之间留 1px 缝（与九宫格接缝同一类问题）。
+                            for i in 0..count {
+                                let sp = blinds_strip_progress(count, bp, i);
+                                if sp <= 0.004 {
+                                    continue;
+                                }
+                                let (ty, th) =
+                                    blinds_strip_rect(count, i, media_rect.height() as f64);
+                                // **上下各外扩 1px**：相邻条故意重叠 1px。
+                                // 每次 append_texture 都是**独立的渲染节点**，节点边缘各自抗锯齿，
+                                // 不重叠时条与条之间会露出 1px 旧图 → 用户看到的"图片割裂 / 6 条横线"
+                                // （与九宫格接缝是同一类问题；那次靠"画进同一个 cairo 节点"解决，
+                                //  纹理做不到，所以这里用重叠让相邻节点的边缘互相盖住）。
+                                // 边缘被媒体裁剪兜住，不会溢出到相框上。
+                                let clip = gtk::graphene::Rect::new(
+                                    media_rect.x(),
+                                    media_rect.y() + ty as f32 - 1.0,
+                                    media_rect.width(),
+                                    th as f32 + 2.0,
+                                );
+                                snapshot.save();
+                                snapshot.push_opacity(sp);
+                                snapshot.push_clip(&clip);
+                                snapshot.append_texture(&tex, &bleed);
+                                snapshot.pop(); // clip
+                                snapshot.pop(); // opacity
                                 snapshot.restore();
                             }
                         } else {
@@ -607,6 +704,37 @@ mod imp {
                         snapshot.append_texture(&tex, &bleed);
                     }
                     snapshot.restore();
+                }
+                // ---- 柔光扫过 / 快门闪白 ----
+                // 都画在**媒体裁剪之内** → 只作用在照片上，绝不会盖到相框。
+                if let Some(tf) = tframe.as_ref() {
+                    let (mwf, mhf) = (media_rect.width() as f64, media_rect.height() as f64);
+                    if let Some((pos, a)) = tf.sweep {
+                        if a > 0.004 {
+                            let cr = snapshot.append_cairo(&frame_rect);
+                            cr.translate(media_rect.x() as f64, media_rect.y() as f64);
+                            // 柔光带：几条**嵌套矩形**由窄到宽、由亮到淡 → 软边。
+                            // 不用 cairo 渐变：少一个 API 差异风险，效果等价。
+                            const SWEEP_LAYERS: [(f64, f64); 4] =
+                                [(0.05, 1.00), (0.09, 0.45), (0.14, 0.22), (0.20, 0.10)];
+                            for (frac, wgt) in SWEEP_LAYERS {
+                                let d = (mwf * frac).max(1.0);
+                                let cx = pos * (mwf + 4.0 * d) - 2.0 * d;
+                                cr.set_source_rgba(1.0, 1.0, 1.0, a * wgt);
+                                cr.rectangle(cx - d, 0.0, d * 2.0, mhf);
+                                let _ = cr.fill();
+                            }
+                        }
+                    }
+                    if let Some(a) = tf.veil {
+                        if a > 0.004 {
+                            let cr = snapshot.append_cairo(&frame_rect);
+                            cr.translate(media_rect.x() as f64, media_rect.y() as f64);
+                            cr.set_source_rgba(1.0, 1.0, 1.0, a);
+                            cr.rectangle(0.0, 0.0, mwf, mhf);
+                            let _ = cr.fill();
+                        }
+                    }
                 }
                 // 涟漪波纹环：在波前上叠 2 条同心细环 + 波前一条高光环（模拟液面折光）。
                 // 画在**媒体裁剪之内** → 只在照片区域内出现，绝不会盖到相框上。
@@ -1784,6 +1912,58 @@ mod trans_tests {
         }
         // 刚起步（半径还很小）时层挤在一起 → 不画
         assert!(ripple_bands(&TransAnim::ripple_geo(0.0, 400.0, 300.0, 0.5, 0.5)).is_empty());
+    }
+
+    /// **新效果几何回归**：百叶帘 p=1 必须**每条都揭开**（否则残留旧图）、
+    /// 条边界严格相邻无缝；柔光带/闪白两端为 0、中点达峰且不越界。
+    #[test]
+    fn new_effects_geometry() {
+        // 百叶帘：错开 + 末尾全揭开
+        let n = BLINDS_COUNT;
+        let early = blinds_strip_progress(n, 0.4, 0);
+        let late = blinds_strip_progress(n, 0.4, n - 1);
+        assert!(early > late, "相邻条必须错开相位：{early} vs {late}");
+        for i in 0..n {
+            assert!(
+                (blinds_strip_progress(n, 1.0, i) - 1.0).abs() < 1e-9,
+                "p=1 时第 {i} 条必须完全揭开（否则残留旧图）"
+            );
+            assert!(blinds_strip_progress(n, 0.0, i) < 1e-9, "起步时不应有已揭开的条");
+        }
+        // 条边界：连续、无缝、铺满整幅
+        let h = 301.0;
+        let mut acc = 0.0;
+        for i in 0..n {
+            let (top, hh) = blinds_strip_rect(n, i, h);
+            assert!((top - acc).abs() < 1e-9, "第 {i} 条起点必须紧邻上一条的终点");
+            acc = top + hh;
+        }
+        assert!((acc - h).abs() < 1e-9, "6 条必须恰好铺满整幅高度");
+
+        // 闪白：两端 0、中点达峰、不越界
+        assert!(veil_alpha(0.0).abs() < 1e-9 && veil_alpha(1.0).abs() < 1e-9);
+        assert!((veil_alpha(0.5) - FLASH_PEAK).abs() < 1e-9, "中点应为峰值");
+        for i in 0..=10 {
+            let a = veil_alpha(i as f64 / 10.0);
+            assert!((0.0..=FLASH_PEAK + 1e-9).contains(&a), "闪白越界：{a}");
+        }
+        // 柔光：位置单调扫过（起点在画面外、终点在另一侧外）
+        assert!(sweep_pos(0.0) < 0.0 && sweep_pos(1.0) > 1.0, "光带必须从画面外扫到画面外");
+        assert!(sweep_pos(0.5) > sweep_pos(0.4));
+        assert!(sweep_alpha(0.0).abs() < 1e-9 && sweep_alpha(1.0).abs() < 1e-9);
+
+        // 接线：四个新效果各自的字段被填、其它字段不被误填
+        let f = anim(Effect::LightSweep).frame(400.0, 300.0);
+        assert!(f.sweep.is_some() && f.veil.is_none() && f.bands.is_none());
+        let f = anim(Effect::Blinds).frame(400.0, 300.0);
+        assert!(f.bands.is_some() && f.sweep.is_none());
+        let f = anim(Effect::Flash).frame(400.0, 300.0);
+        assert!(f.veil.is_some() && f.sweep.is_none());
+        // 老效果不受影响
+        for k in [Effect::Fade, Effect::Slide, Effect::Roll] {
+            let f = anim(k).frame(400.0, 300.0);
+            assert!(f.sweep.is_none() && f.veil.is_none() && f.bands.is_none());
+        }
     }
 
     /// **涟漪回归（多圈）**：相位错开 → 中段必须**同时看到多圈在不同半径上**且

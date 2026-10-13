@@ -168,7 +168,7 @@ pub fn transition_max_ms(c: &Config) -> i32 {
         .clamp(200, MAX_TRANSITION_MS) as i32
 }
 
-pub const TRANSITION_EFFECTS: [(&str, &str); 7] = [
+pub const TRANSITION_EFFECTS: [(&str, &str); 10] = [
     ("fade", "淡入淡出"),
     ("ken_burns", "缓慢推近"),
     ("pull_back", "缓慢拉远"),
@@ -176,6 +176,9 @@ pub const TRANSITION_EFFECTS: [(&str, &str); 7] = [
     ("roll", "垂直卷帘"),
     ("ripple", "水滴涟漪"),
     ("corner_ripple", "四角涟漪"),
+    ("light_sweep", "柔光扫过"),
+    ("blinds", "百叶帘"),
+    ("flash", "快门闪光"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -762,7 +765,7 @@ mod transition_limit_tests {
     fn defaults_and_effect_name() {
         assert_eq!(Config::default().transition.duration_ms, 2_000);
         assert!(TRANSITION_EFFECTS.contains(&("pull_back", "缓慢拉远")));
-        assert_eq!(TRANSITION_EFFECTS.len(), 7);
+        assert_eq!(TRANSITION_EFFECTS.len(), 10);
     }
 }
 
